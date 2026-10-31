@@ -1,0 +1,30 @@
+# Agent Gateway configuration. Copy to config/gateway.yaml and adjust.
+# Any value can be overridden with AGW_<SECTION>__<KEY>, e.g. AGW_APPROVALS__TTL_MINUTES=30.
+
+server:
+  host: 0.0.0.0          # inside the container; docker-compose binds the port to 127.0.0.1
+  port: 8080
+
+var_dir: /app/var
+master_key_file: /run/secrets/agw_master_key
+
+approvals:
+  ttl_minutes: 15
+
+execution:
+  max_concurrent: 8
+  output_limit_bytes: 65536
+
+audit:
+  daily_anchor: true
+
+rate_limit:
+  auth_failures_per_minute: 10
+
+actions:
+  disabled: []
+
+brokers:
+  docker:
+    enabled: false       # mounting the Docker socket is root-equivalent on the host
+    socket: unix:///var/run/docker.sock

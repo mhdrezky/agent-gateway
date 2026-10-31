@@ -127,6 +127,7 @@ agent-gateway/
 │   │   ├── github/
 │   │   ├── cloudflare/
 │   │   └── http/
+│   ├── common/                  # utilitas bersama: ids, clock, canonical JSON, errors, base model
 │   ├── config.py                # loader konfigurasi
 │   └── cli.py                   # CLI admin (`agw`)
 ├── config/
@@ -137,6 +138,8 @@ agent-gateway/
 │   └── Dockerfile
 ├── scripts/
 ├── tests/
+│   ├── fakes/                   # implementasi in-memory dari kontrak
+│   ├── contracts/               # test kontrak yang bisa dipakai ulang oleh implementasi nyata
 │   ├── unit/
 │   ├── integration/
 │   └── security/
@@ -162,9 +165,24 @@ credentials ──▶ crypto
 semua module persisten ──▶ storage
 ```
 
-- `brokers` tidak boleh meng-import `apps`, `execution`, atau `authorization`.
+- `brokers` tidak boleh meng-import `apps`, `cli`, `execution`, `authorization`, atau `crypto`.
 - `apps` tidak boleh memanggil broker secara langsung.
-- Hanya `credentials` yang boleh memanggil fungsi dekripsi dari `crypto`.
+- `apps/mcp_server` hanya boleh meng-import `models.py` dari module, bukan `ports`, `storage`, atau `crypto`.
+- Hanya `credentials` yang boleh memanggil fungsi dekripsi dari `crypto`. `identity` (HMAC token) dan `audit` (anchor) hanya boleh memakai `KeyRing.subkey`. `authorization`, `action_registry`, `approvals`, `resources`, `execution` tidak boleh meng-import `crypto`.
+- `common` tidak boleh meng-import module lain mana pun.
+- Tidak ada relative import.
+
+Aturan di atas ditegakkan oleh `tests/security/test_import_boundaries.py`.
+
+### Konvensi file di dalam module
+
+| File | Isi |
+| ---- | --- |
+| `models.py` | Model Pydantic / dataclass milik module. Boleh di-import module lain. |
+| `ports.py` | `Protocol` yang menjadi kontrak publik module. Module lain bergantung pada ini, bukan pada implementasi. |
+| file lain | Implementasi (mis. `service.py`, `json_collection.py`). Hanya di-import oleh composition root (`apps`, `cli`) dan test. |
+
+Semua model turunan `common.models.StrictModel` (immutable, `extra="forbid"`); model yang disimpan di collection turunan `Record` (punya `id`). Timestamp memakai `AwareDatetime`, sehingga datetime tanpa timezone ditolak.
 
 ## 5. Tanggung jawab module
 
@@ -239,14 +257,21 @@ Jika proses mati di tengah, file lama tetap utuh. File `*.tmp-*` sisa dibersihka
 
 ### 6.5 Interface
 
+Kontrak lengkap ada di `modules/storage/ports.py`:
+
 ```python
-class JsonCollection(Generic[T]):
-    async def get(self, id: str) -> T | None: ...
-    async def list(self) -> list[T]: ...
-    async def put(self, item: T) -> None: ...
-    async def delete(self, id: str) -> None: ...
-    async def update(self, id: str, fn: Callable[[T], T]) -> T: ...  # read-modify-write dalam satu lock
+class Collection[R: Record](Protocol):
+    async def get(self, item_id: str) -> R | None: ...
+    async def all(self) -> list[R]: ...
+    async def put(self, item: R) -> None: ...
+    async def delete(self, item_id: str) -> bool: ...
+    async def update(self, item_id: str, fn: Callable[[R], R]) -> R: ...  # read-modify-write dalam satu lock
+
+class BlobStore(Protocol): ...   # read / write / delete bytes secara atomic
+class Locker(Protocol): ...      # lock(name) -> async context manager, berlaku lintas proses
 ```
+
+Implementasi `Collection` wajib lulus `tests/contracts/collection.py::CollectionContract`.
 
 ## 7. Spesifikasi enkripsi
 
@@ -444,11 +469,13 @@ Pola action mendukung wildcard `*` hanya di segmen terakhir.
 ### 9.1 Format token
 
 ```
-agw_<kind>_<token_id_ulid>_<secret>
+agw_<token_id>_<secret>        dengan token_id = tok_<ULID>
 ```
 
-- `secret`: 32 byte acak, base64url tanpa padding.
+- `secret`: 32 byte acak, base64url tanpa padding (bisa mengandung `_`).
+- Parse dengan `split("_", 3)` → `["agw", "tok", "<ULID>", "<secret>"]`.
 - Contoh: `agw_tok_01JB8XYZ..._q2V...`.
+- Jenis token (`agent` / `admin`) tidak tercantum di string token; jenisnya dibaca dari `tokens.json`.
 - Plaintext hanya ditampilkan sekali saat dibuat.
 
 ### 9.2 Verifikasi
@@ -499,12 +526,12 @@ Keputusan bersifat murni (tanpa I/O) agar mudah di-test.
 
 ```python
 class ActionDefinition(BaseModel):
-    id: str                      # "ssh.service.restart"
-    broker: str                  # "ssh"
-    resource_type: str           # "ssh_host"
-    description: str             # dipakai sebagai deskripsi tool MCP
+    id: str  # "ssh.service.restart"
+    broker: str  # "ssh"
+    resource_type: str  # "ssh_host"
+    description: str  # dipakai sebagai deskripsi tool MCP
     risk: Literal["low", "medium", "high", "critical"]
-    input_model: type[BaseModel] # schema parameter, extra="forbid"
+    input_model: type[BaseModel]  # schema parameter, extra="forbid"
     timeout_seconds: int = 60
 ```
 
@@ -531,11 +558,12 @@ class ActionContext:
     resource: Resource
     credential: SecretPayload | None  # sudah didekripsi oleh execution engine
     timeout_seconds: int
-    logger: BoundLogger                # logger yang otomatis meredaksi secret
+    logger: BoundLogger  # logger yang otomatis meredaksi secret
+
 
 class ActionResult(BaseModel):
     ok: bool
-    data: dict[str, Any]               # output yang aman untuk agent
+    data: dict[str, Any]  # output yang aman untuk agent
     truncated: bool = False
 ```
 
@@ -709,8 +737,8 @@ Tidak ada endpoint yang mengembalikan plaintext credential atau master key.
 | ---- | ------ |
 | 401 | `unauthenticated` |
 | 403 | `action_not_allowed`, `admin_required` |
-| 404 | `action_not_found`, `resource_not_found`, `execution_not_found` |
-| 409 | `approval_not_pending` |
+| 404 | `action_not_found`, `resource_not_found`, `execution_not_found`, `agent_not_found`, `credential_not_found`, `approval_not_found` |
+| 409 | `approval_not_pending`, `conflict` |
 | 422 | `invalid_params` |
 | 429 | `rate_limited` |
 | 503 | `audit_unavailable` |
@@ -756,7 +784,7 @@ Contoh konfigurasi client:
 
 ```yaml
 server:
-  host: 0.0.0.0
+  host: 0.0.0.0           # di dalam container; default di luar container 127.0.0.1
   port: 8080
 var_dir: /app/var
 master_key_file: /run/secrets/agw_master_key
@@ -773,7 +801,7 @@ actions:
   disabled: []
 brokers:
   docker:
-    enabled: true
+    enabled: false        # mount Docker socket = akses root ke host; aktifkan secara sadar
     socket: unix:///var/run/docker.sock
 ```
 
