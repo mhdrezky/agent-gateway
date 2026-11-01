@@ -11,3 +11,4 @@ secrets
 config/gateway.yaml
 tests
 devnote
+.env

@@ -15,6 +15,7 @@ from typing import Annotated, Any
 import typer
 from pydantic import BaseModel
 
+from agent_gateway.common.envfile import ADMIN_TOKEN_VAR, DEFAULT_ENV_FILE, save_env_var
 from agent_gateway.common.errors import GatewayError
 from agent_gateway.config import Settings, load_settings
 from agent_gateway.modules.administration.service import CLI_PRINCIPAL
@@ -28,7 +29,7 @@ from agent_gateway.modules.authorization.models import (
 )
 from agent_gateway.modules.credentials.models import CredentialType, SecretPayload
 from agent_gateway.modules.crypto.keyring import generate_master_key
-from agent_gateway.modules.identity.models import AgentStatus, TokenKind
+from agent_gateway.modules.identity.models import AgentStatus, IssuedToken, TokenKind
 from agent_gateway.modules.resources.models import ResourceType
 from agent_gateway.runtime import Gateway, build_gateway
 
@@ -84,9 +85,59 @@ def _print(value: Any) -> None:
     typer.echo(json.dumps(value, indent=2))
 
 
-def _show_token_once(plaintext: str) -> None:
-    typer.secho("\nToken (shown only once, store it now):", fg=typer.colors.YELLOW, err=True)
-    typer.echo(plaintext)
+def _token_block(title: str, rows: list[tuple[str, str]]) -> None:
+    """Print a token's id and related values together, aligned, as one block."""
+    typer.secho(f"\n{title}", fg=typer.colors.YELLOW, bold=True)
+    width = max(len(label) for label, _ in rows)
+    for label, value in rows:
+        typer.echo(f"  {label:<{width}}  {value}")
+
+
+def _show_token_once(issued: IssuedToken) -> None:
+    rows = [("id", issued.token.id)]
+    if issued.token.agent_id is not None:
+        rows.append(("agent", issued.token.agent_id))
+    rows.append(("token", issued.plaintext.get_secret_value()))
+    _token_block(
+        f"{issued.token.kind.value.capitalize()} token (shown only once, store it now)", rows
+    )
+
+
+EnvFileOption = Annotated[
+    Path,
+    typer.Option(help="Where to save the admin token as AGW_ADMIN_TOKEN.", envvar="AGW_ENV_FILE"),
+]
+SaveEnvOption = Annotated[
+    bool, typer.Option("--save-env/--no-save-env", help="Save the admin token to --env-file.")
+]
+
+
+def _deliver_admin_token(issued: IssuedToken, env_file: Path, save: bool) -> None:
+    """Save the admin token to ``env_file`` and say where; print it if saving is off or fails."""
+    if save:
+        try:
+            save_env_var(
+                env_file,
+                ADMIN_TOKEN_VAR,
+                issued.plaintext.get_secret_value(),
+                comment="Agent Gateway admin token (secret)",
+            )
+        except OSError as exc:
+            typer.secho(f"Could not write {env_file}: {exc}", fg=typer.colors.RED, err=True)
+        else:
+            _token_block(
+                "Admin token",
+                [
+                    ("id", issued.token.id),
+                    ("saved", f"{env_file.resolve()} ({ADMIN_TOKEN_VAR})"),
+                ],
+            )
+            typer.echo(
+                "  Anyone who can read that file is a gateway admin: keep it private and out of "
+                "git.\n  agw-onboard-ssh reads it automatically."
+            )
+            return
+    _show_token_once(issued)
 
 
 # ---- setup ------------------------------------------------------------------------------
@@ -112,8 +163,12 @@ def keygen(
 
 
 @app.command()
-def init(config: ConfigOption = None) -> None:
-    """Create the data directory and the first admin token."""
+def init(
+    config: ConfigOption = None,
+    env_file: EnvFileOption = DEFAULT_ENV_FILE,
+    save_env: SaveEnvOption = True,
+) -> None:
+    """Create the data directory and the first admin token (saved to .env by default)."""
 
     async def go(gw: Gateway) -> None:
         gw.settings.var_dir.mkdir(parents=True, exist_ok=True)
@@ -122,8 +177,8 @@ def init(config: ConfigOption = None) -> None:
             typer.echo("Already initialised; use `agw token create --admin` for another token.")
             return
         issued = await gw.admin.issue_token(CLI_PRINCIPAL, TokenKind.ADMIN)
-        typer.echo(f"Initialised {gw.settings.var_dir}. Admin token id: {issued.token.id}")
-        _show_token_once(issued.plaintext.get_secret_value())
+        typer.echo(f"Initialised {gw.settings.var_dir}.")
+        _deliver_admin_token(issued, env_file, save_env)
 
     _run(config, go)
 
@@ -208,6 +263,11 @@ def token_create(
     admin: Annotated[bool, typer.Option("--admin", help="Create an admin token.")] = False,
     expires_days: Annotated[int | None, typer.Option(min=1)] = None,
     config: ConfigOption = None,
+    env_file: EnvFileOption = DEFAULT_ENV_FILE,
+    save_env: Annotated[
+        bool,
+        typer.Option("--save-env/--no-save-env", help="With --admin: save it to --env-file."),
+    ] = True,
 ) -> None:
     if admin == (agent is not None):
         typer.secho("Pass exactly one of --agent or --admin.", fg=typer.colors.RED, err=True)
@@ -218,8 +278,10 @@ def token_create(
         config,
         lambda gw: gw.admin.issue_token(CLI_PRINCIPAL, kind, agent_id=agent, expires_at=expires_at),
     )
-    typer.echo(f"Token id: {issued.token.id}")
-    _show_token_once(issued.plaintext.get_secret_value())
+    if admin:
+        _deliver_admin_token(issued, env_file, save_env)
+    else:
+        _show_token_once(issued)
 
 
 @token_app.command("list")

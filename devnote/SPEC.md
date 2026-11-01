@@ -954,8 +954,9 @@ Kriteria selesai: Claude Code bisa memanggil `execute_action` via MCP ke gateway
 | Test P1–P7 + integrasi REST/MCP/CLI | selesai |
 | Uji e2e: image Docker + server OpenSSH nyata, via REST, CLI, dan MCP stdio (`tests/e2e/run_e2e.py`, 16 cek) | selesai |
 | Uji langsung dari Claude Code ke host milik sendiri | **belum** |
+| `agw-onboard-ssh`: onboarding host SSH interaktif lewat admin API (key, cek host key, cek authorized_keys, penamaan `<base>-server/-key/-operator/-agent`, registrasi, uji `ssh.system.info`) | selesai |
 
-Alur setup: `agw keygen --out secrets/master.key` di host → `docker compose run --rm gateway agw init` (mencetak token admin sekali) → `docker compose up -d`.
+Alur setup: `agw keygen --out secrets/master.key` di host → `docker compose run --rm -v "${PWD}:/host" gateway agw init --env-file /host/.env` (token admin disimpan ke `.env` sebagai `AGW_ADMIN_TOKEN`; `--no-save-env` untuk mencetaknya saja) → `docker compose up -d`.
 
 Struktur tambahan Fase 2: `src/agent_gateway/runtime.py` adalah satu-satunya tempat yang merangkai implementasi konkret; `modules/*` tidak boleh meng-import `apps`, `cli`, atau `runtime`. Fixture gateway lengkap untuk test ada di `tests/world.py`.
 

@@ -22,6 +22,7 @@ dependencies = [
 [project.scripts]
 agw = "agent_gateway.cli:app"
 agw-mcp = "agent_gateway.apps.mcp_server.server:main"
+agw-onboard-ssh = "agent_gateway.apps.onboarding.ssh_host:run"
 
 [dependency-groups]
 dev = [

@@ -142,7 +142,7 @@ Requirements: [uv](https://docs.astral.sh/uv/) and, for deployment, Docker Deskt
 uv sync
 uv run agw keygen --out secrets/master.key       # back this file up separately
 cp config/gateway.example.yaml config/gateway.yaml
-docker compose run --rm gateway agw init         # prints the first admin token once
+docker compose run --rm -v "${PWD}:/host" gateway agw init --env-file /host/.env
 docker compose up -d
 curl http://127.0.0.1:8080/v1/health
 ```
@@ -152,13 +152,31 @@ curl http://127.0.0.1:8080/v1/health
 ```bash
 uv sync
 uv run agw keygen --out secrets/master.key
-uv run agw init
+uv run agw init                                   # saves the admin token to .env
 uv run agw serve
 ```
 
+`agw init` saves the first admin token to `.env` as `AGW_ADMIN_TOKEN` and says where; `agw token create --admin` does the same for a new one. `.env` is gitignored (see `.env.example` for its format) and created owner-only: anyone who can read it is a gateway admin. Use `--no-save-env` to print the token instead.
+
 Without a `config/gateway.yaml`, the gateway uses `var/` for data, `secrets/master.key` for the key, and listens on `127.0.0.1:8080`.
 
-### Give an agent access
+### Scripts
+
+| Command | What it does |
+| ------- | ------------ |
+| `agw` | Admin CLI on the gateway's data directory (`keygen`, `init`, `serve`, `agent`, `token`, `resource`, `credential`, `role`, `policy`, `approvals`, `audit`) |
+| `agw-onboard-ssh` | Interactive onboarding of an SSH host over the admin API: SSH key, host key check, authorized_keys check, names, registration, and a test run |
+| `agw-mcp` | MCP server (stdio) for agents; needs `AGW_URL` and `AGW_TOKEN` |
+
+### Onboard an SSH host (recommended)
+
+```bash
+uv run agw-onboard-ssh
+```
+
+It asks for the admin token, the host, port, and SSH user, reuses `secrets/vps-deploy` (or creates it), shows the host key fingerprint for you to confirm, prints the commands to create a dedicated SSH user (default `agent-gateway`, no password, optional `systemd-journal`/`docker` groups) or to install the key for an existing user, waits while you run them, logs in to verify, then creates `<name>-server`, `<name>-key`, `<name>-operator`, and `<name>-agent`, runs `ssh.system.info` as the new agent, and prints the agent token once with a ready `.mcp.json`. It reads the admin token from `--admin-token`, `AGW_ADMIN_TOKEN`, or `.env`; if it has to ask, it offers to save the token to `.env` for next time.
+
+### Give an agent access (manual)
 
 ```bash
 uv run agw role set operator -a ssh.service.status -a ssh.service.restart

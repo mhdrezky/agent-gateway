@@ -3,7 +3,8 @@
 # First run:
 #   uv run agw keygen --out secrets/master.key
 #   cp config/gateway.example.yaml config/gateway.yaml
-#   docker compose run --rm gateway agw init      # prints the first admin token once
+#   docker compose run --rm -v "${PWD}:/host" gateway agw init --env-file /host/.env
+#                                                 # saves the admin token to ./.env
 #   docker compose up -d
 
 services:
