@@ -784,14 +784,39 @@ OpenAPI di-generate otomatis oleh FastAPI dan diekspor ke `devnote/openapi.json`
 
 Deskripsi `execute_action` menjelaskan bahwa respons dapat berstatus `pending_approval` dan agent harus memanggil `get_execution` untuk mengecek hasil, bukan mengulang submit.
 
-Contoh konfigurasi client:
+### Endpoint `/mcp` (Streamable HTTP, utama)
+
+Sejak 2026-11-01 gateway melayani MCP langsung di `/mcp` (`apps/api_server/mcp_http.py`), sehingga agent cukup punya URL dan token agent, tanpa repo atau program lokal:
+
+```json
+{
+  "mcpServers": {
+    "agent-gateway": {
+      "type": "http",
+      "url": "http://127.0.0.1:8080/mcp",
+      "headers": { "Authorization": "Bearer ${AGW_TOKEN}" }
+    }
+  }
+}
+```
+
+- Setiap request HTTP ke `/mcp` diautentikasi (rate limit + audit `auth.failed`, sama seperti REST) sebelum sampai ke lapisan MCP. Tanpa token valid → `401`; token admin → `403`.
+- Setiap tool call mengautentikasi ulang token dari header request-nya sendiri, jadi tool selalu berjalan sebagai agent pengirim. Tidak ada token yang disimpan di proses.
+- Tool memanggil `ExecutionEngine` dan view yang sama dengan REST (`apps/api_server/views.py`), jadi P6 tetap terjaga.
+- Mode stateless + JSON response: tidak ada sesi MCP yang disimpan di memori server.
+- Proteksi DNS rebinding: hanya Host `127.0.0.1`, `localhost`, `[::1]`, plus `server.public_hosts` di config.
+- Diuji di container nyata ke `tybozen-server`: `ssh.system.info` lewat `/mcp` berhasil.
+
+### Bridge stdio (`agw-mcp`, opsional)
+
+Untuk client yang hanya mendukung stdio:
 
 ```json
 {
   "mcpServers": {
     "agent-gateway": {
       "command": "uv",
-      "args": ["run", "agw-mcp"],
+      "args": ["--directory", "/path/to/agent-gateway", "run", "agw-mcp"],
       "env": { "AGW_URL": "http://127.0.0.1:8080", "AGW_TOKEN": "agw_tok_..." }
     }
   }
@@ -946,7 +971,7 @@ Kriteria selesai: Claude Code bisa memanggil `execute_action` via MCP ke gateway
 | `modules/administration` (operasi admin ber-audit, dipakai REST + CLI) | selesai |
 | `runtime.py` (composition root) | selesai |
 | REST API agent + admin, rate limit gagal-auth, audit `auth.failed` | selesai |
-| MCP server (`agw-mcp`, stdio) | selesai |
+| MCP server: endpoint `/mcp` di gateway (HTTP, utama) dan bridge stdio `agw-mcp` | selesai |
 | CLI: `keygen`, `init`, `serve`, `agent`, `token`, `resource`, `credential`, `role`, `policy`, `approvals`, `audit verify` | selesai |
 | CLI: `backup`, `rotate-master-key` | **belum** |
 | Anchor HMAC harian audit (§14.3) | **belum** (TODO di `file_log.py`) |

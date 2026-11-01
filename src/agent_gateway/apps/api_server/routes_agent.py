@@ -13,6 +13,7 @@ from agent_gateway.apps.api_server.schemas import (
     ResourceInfo,
     WhoAmI,
 )
+from agent_gateway.apps.api_server.views import action_infos, resource_infos
 from agent_gateway.modules.execution.models import Execution, ExecutionRequest, ExecutionStatus
 from agent_gateway.modules.resources.models import ResourceType
 
@@ -36,33 +37,14 @@ async def whoami(principal: PrincipalDep) -> WhoAmI:
 
 @router.get("/actions")
 async def list_actions(gateway: GatewayDep, principal: PrincipalDep) -> list[ActionInfo]:
-    actions = (
-        gateway.registry.all()
-        if principal.is_admin
-        else await gateway.engine.visible_actions(principal)
-    )
-    return [
-        ActionInfo(
-            id=a.definition.id,
-            description=a.definition.description,
-            risk=a.definition.risk,
-            resource_type=a.definition.resource_type,
-            params_schema=a.definition.params_schema(),
-        )
-        for a in sorted(actions, key=lambda a: a.definition.id)
-    ]
+    return await action_infos(gateway, principal)
 
 
 @router.get("/resources")
 async def list_resources(
     gateway: GatewayDep, principal: PrincipalDep, type: ResourceType | None = None
 ) -> list[ResourceInfo]:
-    resources = await gateway.engine.visible_resources(principal)
-    return [
-        ResourceInfo(id=r.id, type=r.type, name=r.name, tags=r.tags)
-        for r in sorted(resources, key=lambda r: r.name)
-        if type is None or r.type is type
-    ]
+    return await resource_infos(gateway, principal, type)
 
 
 @router.post("/executions")

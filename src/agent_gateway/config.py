@@ -23,6 +23,9 @@ class _Section(BaseModel):
 class ServerSettings(_Section):
     host: str = "127.0.0.1"
     port: int = Field(default=8080, ge=1, le=65535)
+    # Host names (host[:port], "*" for any port) besides localhost that /mcp accepts in the
+    # Host header, e.g. "gateway.example.com". Guards against DNS rebinding.
+    public_hosts: list[str] = Field(default_factory=list)
 
 
 class ApprovalSettings(_Section):

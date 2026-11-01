@@ -50,20 +50,24 @@ def get_gateway(request: Request) -> Gateway:
 GatewayDep = Annotated[Gateway, Depends(get_gateway)]
 
 
-async def current_principal(
-    request: Request,
-    gateway: GatewayDep,
-    authorization: Annotated[str | None, Header()] = None,
+def bearer_token(authorization: str | None) -> str:
+    """The token from an ``Authorization: Bearer ...`` header; raises 401 otherwise."""
+    scheme, _, raw = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not raw.strip():
+        raise AuthenticationError(AUTH_FAILED_MESSAGE)
+    return raw.strip()
+
+
+async def authenticate_request(
+    request: Request, gateway: Gateway, limiter: FailureLimiter
 ) -> Principal:
-    limiter: FailureLimiter = request.app.state.limiter
+    """Rate-limited bearer authentication with failures audited. Used by REST and ``/mcp``."""
     client = request.client.host if request.client else "unknown"
     limiter.check(client)
-
-    scheme, _, raw = (authorization or "").partition(" ")
     try:
-        if scheme.lower() != "bearer" or not raw:
-            raise AuthenticationError(AUTH_FAILED_MESSAGE)
-        return await gateway.authenticator.authenticate(raw.strip())
+        return await gateway.authenticator.authenticate(
+            bearer_token(request.headers.get("authorization"))
+        )
     except AuthenticationError:
         limiter.record(client)
         # Auditing a failure must never turn a 401 into a 503.
@@ -76,6 +80,15 @@ async def current_principal(
                 )
             )
         raise
+
+
+async def current_principal(
+    request: Request,
+    gateway: GatewayDep,
+    # Declared so the header shows up in the OpenAPI schema; read via the request.
+    authorization: Annotated[str | None, Header()] = None,
+) -> Principal:
+    return await authenticate_request(request, gateway, request.app.state.limiter)
 
 
 PrincipalDep = Annotated[Principal, Depends(current_principal)]

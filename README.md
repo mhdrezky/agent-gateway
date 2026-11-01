@@ -166,7 +166,7 @@ Without a `config/gateway.yaml`, the gateway uses `var/` for data, `secrets/mast
 | ------- | ------------ |
 | `agw` | Admin CLI on the gateway's data directory (`keygen`, `init`, `serve`, `agent`, `token`, `resource`, `credential`, `role`, `policy`, `approvals`, `audit`) |
 | `agw-onboard-ssh` | Interactive onboarding of an SSH host over the admin API: SSH key, host key check, authorized_keys check, names, registration, and a test run |
-| `agw-mcp` | MCP server (stdio) for agents; needs `AGW_URL` and `AGW_TOKEN` |
+| `agw-mcp` | Optional stdio MCP bridge for clients that cannot use HTTP MCP; needs `AGW_URL` and `AGW_TOKEN`. Most agents should use the built-in `/mcp` endpoint instead |
 
 ### Onboard an SSH host (recommended)
 
@@ -188,19 +188,25 @@ uv run agw policy add -a "ssh.service.*" --role operator --tag env:prod
 uv run agw token create --agent <agent_id>         # prints the agent token once
 ```
 
-Then point the agent at the REST API, or add the MCP server to its client config:
+### Connect an agent over MCP
+
+The gateway serves MCP (Streamable HTTP) at `/mcp`. An agent needs only the URL and its own agent token, no copy of this repo. Put the token in the `AGW_TOKEN` environment variable and add this to the agent project's `.mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "agent-gateway": {
-      "command": "uv",
-      "args": ["--directory", "/path/to/agent-gateway", "run", "agw-mcp"],
-      "env": { "AGW_URL": "http://127.0.0.1:8080", "AGW_TOKEN": "agw_tok_..." }
+      "type": "http",
+      "url": "http://127.0.0.1:8080/mcp",
+      "headers": { "Authorization": "Bearer ${AGW_TOKEN}" }
     }
   }
 }
 ```
+
+Every `/mcp` request is authenticated with that header; requests without a valid agent token get `401`, admin tokens get `403`, and each tool call runs as the agent that sent it, through the same engine as the REST API. `/mcp` accepts only `localhost` Host headers unless you list public names in `server.public_hosts`; expose it beyond this machine only behind HTTPS.
+
+Clients that only speak stdio can use the bridge instead: `"command": "uv", "args": ["--directory", "/path/to/agent-gateway", "run", "agw-mcp"]` with `AGW_URL` and `AGW_TOKEN` in `env`.
 
 Actions that need approval return `pending_approval`. Review them with:
 

@@ -4,6 +4,7 @@
 server:
   host: 0.0.0.0          # inside the container; docker-compose binds the port to 127.0.0.1
   port: 8080
+  public_hosts: []       # extra Host names for /mcp, e.g. ["gateway.example.com"]
 
 var_dir: /app/var
 master_key_file: /run/secrets/agw_master_key

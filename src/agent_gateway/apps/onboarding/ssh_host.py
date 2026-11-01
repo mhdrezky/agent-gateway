@@ -351,14 +351,9 @@ async def _onboard(
                 {
                     "mcpServers": {
                         "agent-gateway": {
-                            "command": "uv",
-                            "args": [
-                                "--directory",
-                                str(Path.cwd().as_posix()),
-                                "run",
-                                "agw-mcp",
-                            ],
-                            "env": {"AGW_URL": url, "AGW_TOKEN": "${AGW_TOKEN}"},
+                            "type": "http",
+                            "url": f"{url.rstrip('/')}/mcp",
+                            "headers": {"Authorization": "Bearer ${AGW_TOKEN}"},
                         }
                     }
                 },
