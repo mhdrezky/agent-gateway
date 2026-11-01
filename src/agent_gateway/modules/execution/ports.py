@@ -1,9 +1,33 @@
 """Execution engine contract (SPEC §12). REST and MCP both end up here."""
 
+from collections.abc import Callable
+from datetime import datetime
 from typing import Protocol
 
 from agent_gateway.modules.execution.models import Execution, ExecutionRequest
 from agent_gateway.modules.identity.models import Principal
+
+
+class ExecutionStore(Protocol):
+    """One record per execution (SPEC §6.1: ``executions/<yyyy-mm>/exe_<id>.json``)."""
+
+    async def get(self, execution_id: str) -> Execution | None: ...
+
+    async def put(self, execution: Execution) -> None: ...
+
+    async def update(self, execution_id: str, fn: Callable[[Execution], Execution]) -> Execution:
+        """Raise ``ExecutionNotFoundError`` if missing."""
+        ...
+
+    async def recent(self, *, since: datetime) -> list[Execution]:
+        """Executions created at or after ``since``, newest first."""
+        ...
+
+    async def page(
+        self, *, agent_id: str | None, before: str | None, limit: int
+    ) -> list[Execution]:
+        """Newest first, optionally only one agent's, strictly older than id ``before``."""
+        ...
 
 
 class ExecutionEngine(Protocol):

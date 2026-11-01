@@ -15,16 +15,12 @@ RULES: list[tuple[str, tuple[str, ...]]] = [
         ("apps", "cli", "modules.execution", "modules.authorization", "modules.crypto"),
     ),
     ("apps", ("brokers",)),
-    # P6: the MCP server is a thin REST client and may only share model schemas.
-    (
-        "apps.mcp_server",
-        (
-            "modules.storage",
-            "modules.crypto",
-            "modules.credentials.ports",
-            "modules.execution.ports",
-        ),
-    ),
+    # P6: the MCP server is a thin REST client; it reaches the engine only over HTTP.
+    ("apps.mcp_server", ("modules", "brokers", "runtime", "cli", "apps.api_server")),
+    # Only the composition root (runtime, cli, apps) wires implementations together.
+    ("modules", ("apps", "cli", "runtime")),
+    ("brokers", ("runtime",)),
+    ("modules.administration", ("modules.crypto", "brokers", "modules.execution")),
     (
         "modules.authorization",
         ("modules.crypto", "modules.storage", "brokers.ssh", "brokers.docker"),

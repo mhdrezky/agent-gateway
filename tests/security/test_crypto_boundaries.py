@@ -14,6 +14,7 @@ ALLOWED: dict[str, tuple[str, ...]] = {
     # The composition root wires the real implementations together.
     "apps": ("modules.crypto",),
     "cli": ("modules.crypto",),
+    "runtime": ("modules.crypto",),
 }
 
 

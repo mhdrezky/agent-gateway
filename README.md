@@ -4,7 +4,7 @@
 
 Agent Gateway is a self-hosted gateway that sits between AI agents (LLM agents, MCP clients, scripts, CI jobs) and your infrastructure (servers, containers, GitHub, Cloudflare, cloud APIs). Agents never hold credentials and never run arbitrary commands. They ask the gateway to perform **registered actions**. The gateway authenticates the agent, authorizes the request against policy, optionally waits for human approval, runs the action through a broker, and records everything in a tamper-evident audit log.
 
-> Status: **Design / pre-implementation.** See [devnote/SPEC.md](devnote/SPEC.md) for the technical specification.
+> Status: **v0.1, phases 0–2 implemented** (core, SSH and Docker brokers, REST API, MCP server, CLI). Not yet battle-tested on production resources. See [devnote/SPEC.md](devnote/SPEC.md) for the technical specification.
 
 ---
 
@@ -134,17 +134,68 @@ Tracks 1A, 1B, and 1C run in parallel on top of the Phase 0 contracts.
 
 ## Getting started
 
-> Not yet implemented. The intended workflow:
+Requirements: [uv](https://docs.astral.sh/uv/) and, for deployment, Docker Desktop.
+
+### Run with Docker
 
 ```bash
-git clone <repo-url> agent-gateway
-cd agent-gateway
+uv sync
+uv run agw keygen --out secrets/master.key       # back this file up separately
 cp config/gateway.example.yaml config/gateway.yaml
-uv run agw init --master-key-file secrets/master.key
+docker compose run --rm gateway agw init         # prints the first admin token once
 docker compose up -d
+curl http://127.0.0.1:8080/v1/health
 ```
 
-Then register an agent, add a resource and its credential, grant the agent a role, and point the agent at the REST API or the MCP server.
+### Run locally
+
+```bash
+uv sync
+uv run agw keygen --out secrets/master.key
+uv run agw init
+uv run agw serve
+```
+
+Without a `config/gateway.yaml`, the gateway uses `var/` for data, `secrets/master.key` for the key, and listens on `127.0.0.1:8080`.
+
+### Give an agent access
+
+```bash
+uv run agw role set operator -a ssh.service.status -a ssh.service.restart
+uv run agw agent create claude-ops -r operator
+uv run agw credential add homelab-key ssh_private_key --value-file ~/.ssh/deploy_key
+uv run agw resource add ssh_host homelab-1 --tag env:prod --credential <cred_id> \
+  --attributes '{"host": "192.168.1.10", "username": "deploy", "host_key_fingerprint": "SHA256:...", "allowed_services": ["nginx"]}'
+uv run agw policy add -a "ssh.service.*" --role operator --tag env:prod
+uv run agw token create --agent <agent_id>         # prints the agent token once
+```
+
+Then point the agent at the REST API, or add the MCP server to its client config:
+
+```json
+{
+  "mcpServers": {
+    "agent-gateway": {
+      "command": "uv",
+      "args": ["--directory", "/path/to/agent-gateway", "run", "agw-mcp"],
+      "env": { "AGW_URL": "http://127.0.0.1:8080", "AGW_TOKEN": "agw_tok_..." }
+    }
+  }
+}
+```
+
+Actions that need approval return `pending_approval`. Review them with:
+
+```bash
+uv run agw approvals list
+uv run agw approvals approve <approval_id>
+```
+
+### Development
+
+```bash
+uv run ruff format --check . && uv run ruff check . && uv run mypy && uv run pytest
+```
 
 ---
 

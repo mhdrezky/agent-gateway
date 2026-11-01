@@ -119,7 +119,8 @@ agent-gateway/
 │   │   ├── action_registry/     # definisi & lookup action
 │   │   ├── approvals/           # state machine approval
 │   │   ├── audit/               # writer & verifier hash chain
-│   │   └── execution/           # orkestrasi pipeline eksekusi
+│   │   ├── execution/           # orkestrasi pipeline eksekusi, store, dispatcher approval
+│   │   └── administration/      # operasi admin ber-audit (REST admin + CLI)
 │   ├── brokers/
 │   │   ├── base.py              # Broker protocol & ActionContext
 │   │   ├── ssh/
@@ -129,6 +130,7 @@ agent-gateway/
 │   │   └── http/
 │   ├── common/                  # utilitas bersama: ids, clock, canonical JSON, errors, base model
 │   ├── config.py                # loader konfigurasi
+│   ├── runtime.py               # composition root: merangkai semua implementasi
 │   └── cli.py                   # CLI admin (`agw`)
 ├── config/
 │   └── gateway.example.yaml
@@ -167,7 +169,8 @@ semua module persisten ──▶ storage
 
 - `brokers` tidak boleh meng-import `apps`, `cli`, `execution`, `authorization`, atau `crypto`.
 - `apps` tidak boleh memanggil broker secara langsung.
-- `apps/mcp_server` hanya boleh meng-import `models.py` dari module, bukan `ports`, `storage`, atau `crypto`.
+- `apps/mcp_server` tidak boleh meng-import `modules`, `brokers`, `runtime`, `cli`, atau `apps.api_server`; ia hanya bicara HTTP ke REST API.
+- `modules` tidak boleh meng-import `apps`, `cli`, atau `runtime`. Hanya `runtime.py` (composition root), `cli.py`, dan `apps` yang merangkai implementasi konkret.
 - Hanya `credentials` yang boleh memanggil fungsi dekripsi dari `crypto`. `identity` (HMAC token) dan `audit` (anchor) hanya boleh memakai `KeyRing.subkey`. `authorization`, `action_registry`, `approvals`, `resources`, `execution` tidak boleh meng-import `crypto`.
 - `common` tidak boleh meng-import module lain mana pun.
 - Tidak ada relative import.
@@ -604,9 +607,19 @@ Pipeline:
 7. **Execute:** status `running` → dekripsi credential → panggil broker dengan timeout → simpan hasil → audit.
 8. Kembalikan execution (`200` jika selesai sinkron).
 
-Eksekusi yang sudah disetujui dijalankan sebagai background task di proses yang sama. Saat restart, execution berstatus `running` ditandai `failed` dengan error `interrupted` (tidak di-retry otomatis).
+Eksekusi yang sudah disetujui dijalankan sebagai background task di proses yang sama. Saat restart, execution berstatus `running` ditandai `failed` dengan error `interrupted` (tidak di-retry otomatis), sedangkan execution `approved` yang belum sempat jalan akan dijalankan.
 
 Batas konkurensi: maksimal 1 eksekusi bersamaan per resource (lock per resource), maksimal 8 global.
+
+Detail implementasi (Fase 2, `modules/execution/engine.py`):
+
+- Hanya token `kind=agent` yang bisa submit; token admin ditolak `403 action_not_allowed`.
+- Params yang disimpan dan di-hash adalah hasil normalisasi `input_model` (default ikut terisi), sehingga `params_digest` stabil.
+- **Approval dispatcher:** server menjalankan `dispatch_approvals()` tiap 2 detik dan langsung setelah approve/reject via API. Dispatcher membaca `approvals.json`, sehingga approval dari CLI (proses lain) juga diproses. Approval `approved` → execution dijalankan; `rejected` → execution `rejected`; `expired` → execution `expired`.
+- Sebelum broker dipanggil, `approval.params_digest` dicocokkan lagi dengan execution.
+- Output broker disaring sekali lagi oleh engine (`redact.py`): setiap nilai credential (≥ 4 karakter) diganti `***` (pertahanan berlapis untuk P2).
+- Error broker tidak pernah diteruskan ke agent; agent menerima pesan generik, detail hanya di log server.
+- Penyimpanan: `FileExecutionStore`, satu file per execution; folder bulan diambil dari timestamp ULID di id.
 
 ## 13. Approval workflow
 
@@ -706,20 +719,25 @@ Response: objek Execution (§8.7) dengan status HTTP `200` (selesai), `202` (men
 | Method | Path |
 | ------ | ---- |
 | GET/POST | `/v1/admin/agents` |
-| PATCH/DELETE | `/v1/admin/agents/{id}` |
-| POST | `/v1/admin/agents/{id}/tokens` (mengembalikan plaintext sekali) |
-| DELETE | `/v1/admin/tokens/{id}` |
+| PATCH | `/v1/admin/agents/{id}` (deskripsi, role, status `active`/`disabled`) |
+| POST | `/v1/admin/agents/{id}/tokens` (token agent, plaintext sekali) |
+| GET | `/v1/admin/tokens?agent_id=` |
+| POST | `/v1/admin/tokens` (token admin, plaintext sekali) |
+| DELETE | `/v1/admin/tokens/{id}` (revoke) |
 | GET/POST | `/v1/admin/resources`, PATCH/DELETE `/v1/admin/resources/{id}` |
-| POST | `/v1/admin/credentials` (write-only) |
-| PUT | `/v1/admin/credentials/{id}` (rotasi, write-only) |
 | GET | `/v1/admin/credentials` (metadata saja) |
-| GET/PUT | `/v1/admin/roles`, `/v1/admin/policies` |
+| POST | `/v1/admin/credentials` (write-only) |
+| PUT/DELETE | `/v1/admin/credentials/{id}` (PUT = rotasi, write-only) |
+| GET | `/v1/admin/roles`, PUT/DELETE `/v1/admin/roles/{id}` |
+| GET/POST | `/v1/admin/policies`, PUT/DELETE `/v1/admin/policies/{id}` |
 | GET | `/v1/admin/approvals?status=pending` |
 | POST | `/v1/admin/approvals/{id}/approve`, `/v1/admin/approvals/{id}/reject` |
-| GET | `/v1/admin/audit?from=&to=&event=` |
+| GET | `/v1/admin/audit?since=&until=&event=` |
 | GET | `/v1/admin/audit/verify` |
 
-Tidak ada endpoint yang mengembalikan plaintext credential atau master key.
+Tidak ada endpoint yang mengembalikan plaintext credential atau master key. Agent tidak bisa menghapus agent; nonaktifkan dengan `status: disabled`. Semua perubahan admin dicatat di audit oleh `modules/administration` (dipakai bersama oleh REST dan CLI).
+
+Endpoint `/v1/resources` untuk agent hanya mengembalikan `id`, `type`, `name`, `tags` dari resource yang dipilih oleh minimal satu policy `allow` untuk agent tersebut; `attributes` dan `credential_id` tidak pernah dikirim ke agent.
 
 ### 15.3 Format error
 
@@ -750,8 +768,9 @@ OpenAPI di-generate otomatis oleh FastAPI dan diekspor ke `devnote/openapi.json`
 - Thin client: setiap tool call diterjemahkan menjadi request HTTP ke REST API memakai token agent.
 - Konfigurasi via env: `AGW_URL` (default `http://127.0.0.1:8080`) dan `AGW_TOKEN`.
 - Transport: `stdio` (untuk Claude Code / Claude Desktop) dan Streamable HTTP (opsional).
-- Library: SDK resmi `mcp` (Python).
-- MCP server tidak membaca `var/`, tidak memuat master key, dan tidak meng-import `modules/*` selain model schema bersama.
+- Library: SDK resmi `mcp` v2 (`mcp.server.mcpserver.MCPServer`; di v2 `FastMCP` sudah diganti nama).
+- MCP server tidak membaca `var/`, tidak memuat master key, dan tidak meng-import `modules/*`, `brokers/*`, atau `runtime` sama sekali (ditegakkan oleh test import).
+- Hasil berupa list dibungkus objek (`{"actions": [...]}`, `{"resources": [...]}`) karena MCP memecah list menjadi beberapa item konten. Error gateway dikembalikan sebagai data (`{"error": {...}}`) agar agent tahu alasannya.
 
 ### Tool
 
@@ -917,6 +936,26 @@ Lingkup:
 - Test keamanan P1–P7 (§19) dan test integrasi end-to-end.
 
 Kriteria selesai: Claude Code bisa memanggil `execute_action` via MCP ke gateway yang berjalan di Docker; action ber-risk `medium` di resource `env:prod` menunggu approval dan bisa di-approve via CLI; `agw audit verify` mengembalikan `OK`; semua test P1–P7 lulus.
+
+**Status (2026-11-01):**
+
+| Item | Status |
+| ---- | ------ |
+| Execution engine, store, dispatcher approval, recovery | selesai |
+| `modules/administration` (operasi admin ber-audit, dipakai REST + CLI) | selesai |
+| `runtime.py` (composition root) | selesai |
+| REST API agent + admin, rate limit gagal-auth, audit `auth.failed` | selesai |
+| MCP server (`agw-mcp`, stdio) | selesai |
+| CLI: `keygen`, `init`, `serve`, `agent`, `token`, `resource`, `credential`, `role`, `policy`, `approvals`, `audit verify` | selesai |
+| CLI: `backup`, `rotate-master-key` | **belum** |
+| Anchor HMAC harian audit (§14.3) | **belum** (TODO di `file_log.py`) |
+| Dockerfile + compose | ditulis, **build belum diverifikasi** |
+| Test P1–P7 + integrasi REST/MCP/CLI | selesai |
+| Uji end-to-end dengan Claude Code + host SSH nyata | **belum** |
+
+Alur setup: `agw keygen --out secrets/master.key` di host → `docker compose run --rm gateway agw init` (mencetak token admin sekali) → `docker compose up -d`.
+
+Struktur tambahan Fase 2: `src/agent_gateway/runtime.py` adalah satu-satunya tempat yang merangkai implementasi konkret; `modules/*` tidak boleh meng-import `apps`, `cli`, atau `runtime`. Fixture gateway lengkap untuk test ada di `tests/world.py`.
 
 Gateway **tidak boleh** dipakai pada resource produksi sebelum Fase 2 selesai.
 

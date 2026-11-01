@@ -1,0 +1,13 @@
+.git
+.venv
+.claude
+**/__pycache__
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.hypothesis
+var
+secrets
+config/gateway.yaml
+tests
+devnote

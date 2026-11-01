@@ -19,6 +19,10 @@ dependencies = [
     "uvicorn[standard]>=0.32",
 ]
 
+[project.scripts]
+agw = "agent_gateway.cli:app"
+agw-mcp = "agent_gateway.apps.mcp_server.server:main"
+
 [dependency-groups]
 dev = [
     "hypothesis>=6.112",

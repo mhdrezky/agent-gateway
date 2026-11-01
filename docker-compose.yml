@@ -1,0 +1,34 @@
+# Agent Gateway (SPEC §18).
+#
+# First run:
+#   uv run agw keygen --out secrets/master.key
+#   cp config/gateway.example.yaml config/gateway.yaml
+#   docker compose run --rm gateway agw init      # prints the first admin token once
+#   docker compose up -d
+
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: agent-gateway:local
+    ports:
+      - "127.0.0.1:8080:8080"   # localhost only; put a TLS proxy in front for remote access
+    volumes:
+      - agw-var:/app/var        # named volume: file locks and fsync are unreliable on Windows bind mounts
+      - ./config/gateway.yaml:/app/config/gateway.yaml:ro
+      # Only with brokers.docker.enabled: true. Root-equivalent access to the host;
+      # the container user also needs the socket's group (group_add).
+      # - /var/run/docker.sock:/var/run/docker.sock
+    secrets:
+      - agw_master_key
+    environment:
+      AGW_MASTER_KEY_FILE: /run/secrets/agw_master_key
+    restart: unless-stopped
+
+volumes:
+  agw-var:
+
+secrets:
+  agw_master_key:
+    file: ./secrets/master.key
