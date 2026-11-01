@@ -59,15 +59,22 @@ def bearer_token(authorization: str | None) -> str:
 
 
 async def authenticate_request(
-    request: Request, gateway: Gateway, limiter: FailureLimiter
+    request: Request, gateway: Gateway, limiter: FailureLimiter, token: str | None = None
 ) -> Principal:
-    """Rate-limited bearer authentication with failures audited. Used by REST and ``/mcp``."""
+    """Rate-limited authentication with failures audited. Used by REST, ``/mcp``, and the
+    admin UI login. ``token`` defaults to the request's ``Authorization: Bearer`` header.
+    """
     client = request.client.host if request.client else "unknown"
     limiter.check(client)
     try:
-        return await gateway.authenticator.authenticate(
-            bearer_token(request.headers.get("authorization"))
+        raw = (
+            token.strip()
+            if token is not None
+            else bearer_token(request.headers.get("authorization"))
         )
+        if not raw:
+            raise AuthenticationError(AUTH_FAILED_MESSAGE)
+        return await gateway.authenticator.authenticate(raw)
     except AuthenticationError:
         limiter.record(client)
         # Auditing a failure must never turn a 401 into a 503.

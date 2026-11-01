@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% from "_macros.html" import status, name %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+<div class="grid">
+  <a class="panel" href="/admin/approvals"><div class="muted">Pending approvals</div><div class="stat">{{ pending }}</div></a>
+  <a class="panel" href="/admin/agents"><div class="muted">Agents</div><div class="stat">{{ agents }}</div></a>
+  <a class="panel" href="/admin/resources"><div class="muted">Resources</div><div class="stat">{{ resources }}</div></a>
+  <a class="panel" href="/admin/tokens"><div class="muted">Active tokens</div><div class="stat">{{ tokens }}</div></a>
+</div>
+<h2>Recent executions</h2>
+<div class="panel table-wrap">
+  <table>
+    <tr><th>When</th><th>Agent</th><th>Action</th><th>Resource</th><th>Status</th></tr>
+    {% for e in recent %}
+    <tr>
+      <td><a href="/admin/executions/{{ e.id }}">{{ e.created_at | ts }}</a></td>
+      <td>{{ name(names, e.agent_id) }}</td>
+      <td><code>{{ e.action }}</code></td>
+      <td>{{ name(names, e.resource_id) }}</td>
+      <td>{{ status(e.status) }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="muted">No executions yet.</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Log in{% endblock %}
+{% block content %}
+<div class="panel login">
+  <h1>Agent Gateway admin</h1>
+  {% if error %}<div class="flash error">{{ error }}</div>{% endif %}
+  <form method="post" action="/admin/login" class="stack" autocomplete="off">
+    <label>Admin token
+      <input type="password" name="token" required autofocus placeholder="agw_tok_...">
+      <span>Exchanged for a session cookie; the token is not stored in your browser.</span>
+    </label>
+    <button type="submit" class="primary">Log in</button>
+  </form>
+</div>
+{% endblock %}

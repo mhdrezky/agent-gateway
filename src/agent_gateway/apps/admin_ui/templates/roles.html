@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% from "_macros.html" import csrf_field, risk with context %}
+{% block title %}Roles{% endblock %}
+{% block content %}
+<h1>Roles</h1>
+<p class="muted">A role lists the actions an agent may ask for. Policies then decide on which resources. Wildcards (<code>ssh.*</code>) never cover privileged actions: name those exactly.</p>
+{% for role in roles %}
+<div class="panel">
+  <form method="post" action="/admin/roles" class="stack">
+    {{ csrf_field() }}
+    <input type="hidden" name="id" value="{{ role.id }}">
+    <h2>{{ role.id }}</h2>
+    <label>Description <input type="text" name="description" value="{{ role.description }}"></label>
+    <label>Actions <textarea name="actions">{{ role.actions | join('\n') }}</textarea><span>One per line.</span></label>
+    <div>
+      <button type="submit">Save</button>
+    </div>
+  </form>
+  <form method="post" action="/admin/roles/{{ role.id }}/delete" class="inline">
+    {{ csrf_field() }}
+    <button type="submit" class="danger">Delete role</button>
+  </form>
+</div>
+{% else %}
+<div class="panel muted">No roles yet.</div>
+{% endfor %}
+<h2>New role</h2>
+<div class="panel">
+  <form method="post" action="/admin/roles" class="stack">
+    {{ csrf_field() }}
+    <label>Id <input type="text" name="id" required placeholder="web01-operator"></label>
+    <label>Description <input type="text" name="description"></label>
+    <label>Actions <textarea name="actions" placeholder="ssh.*"></textarea><span>One per line.</span></label>
+    <button type="submit" class="primary">Create role</button>
+  </form>
+</div>
+<h2>Registered actions</h2>
+<div class="panel table-wrap">
+  <table>
+    <tr><th>Action</th><th>Risk</th><th>Target</th><th>Description</th></tr>
+    {% for a in actions %}
+    <tr>
+      <td><code>{{ a.id }}</code>{% if a.privileged %} <span class="badge bad">privileged</span>{% endif %}</td>
+      <td>{{ risk(a.risk) }}</td>
+      <td>{{ a.resource_type.value }}</td>
+      <td>{{ a.description }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

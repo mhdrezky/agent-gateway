@@ -160,6 +160,23 @@ uv run agw serve
 
 Without a `config/gateway.yaml`, the gateway uses `var/` for data, `secrets/master.key` for the key, and listens on `127.0.0.1:8080`.
 
+### Admin web UI
+
+Open `http://127.0.0.1:8080/admin` and log in with an admin token (the one in `.env`). The token is exchanged for an HttpOnly, SameSite=Strict session cookie (8 hours) and is never stored in the browser; revoking that admin token ends the session at once.
+
+| Page | What you can do |
+| ---- | --------------- |
+| Dashboard | Pending approvals, counts, recent executions |
+| Approvals | Review each request with its agent, resource, and full params (root commands highlighted); approve or reject with a reason; optional auto-refresh |
+| Executions | Filter by agent, open any execution for its params, stdout/stderr, and decision |
+| Agents / Tokens | Create agents, set roles, disable/enable, issue tokens (shown once with a ready `.mcp.json`), revoke tokens, new admin token |
+| Resources | Toggle `ssh.sudo`, edit allowed services and tags, delete |
+| Roles / Policies | Edit role actions, create and delete policies; registered actions listed with risk and privileged flag |
+| Credentials | Store, rotate, delete secrets (write-only, never displayed) |
+| Audit | Browse and filter entries, verify the hash chain |
+
+The UI is plain server-rendered HTML: no JavaScript, no third-party assets, a strict Content-Security-Policy, CSRF tokens on every form, and every change goes through the same audited admin service as the CLI. Like the API, it listens on `127.0.0.1` only; put it behind HTTPS before exposing it.
+
 ### Scripts
 
 | Command | What it does |

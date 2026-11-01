@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% from "_macros.html" import status, name %}
+{% block title %}Executions{% endblock %}
+{% block content %}
+<h1>Executions</h1>
+<form method="get" action="/admin/executions" class="inline">
+  <select name="agent">
+    <option value="">All agents</option>
+    {% for a in agents %}
+    <option value="{{ a.id }}" {{ 'selected' if a.id == agent else '' }}>{{ a.name }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit">Filter</button>
+</form>
+<div class="panel table-wrap">
+  <table>
+    <tr><th>When</th><th>Agent</th><th>Action</th><th>Resource</th><th>Status</th><th>Error</th></tr>
+    {% for e in items %}
+    <tr>
+      <td><a href="/admin/executions/{{ e.id }}">{{ e.created_at | ts }}</a></td>
+      <td>{{ name(names, e.agent_id) }}</td>
+      <td><code>{{ e.action }}</code></td>
+      <td>{{ name(names, e.resource_id) }}</td>
+      <td>{{ status(e.status) }}</td>
+      <td class="muted">{{ e.error or "" }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="muted">No executions.</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% if next_cursor %}
+<p><a href="/admin/executions?cursor={{ next_cursor }}&agent={{ agent }}">Older →</a></p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% from "_macros.html" import csrf_field, name with context %}
+{% block title %}Tokens{% endblock %}
+{% block content %}
+<h1>Tokens</h1>
+<div class="panel table-wrap">
+  <table>
+    <tr><th>Token</th><th>Kind</th><th>Agent</th><th>Created</th><th>Last used</th><th>Expires</th><th>State</th><th></th></tr>
+    {% for t in tokens %}
+    <tr>
+      <td><code>{{ t.id }}</code>{% if t.id == current %} <span class="badge warn">this session</span>{% endif %}</td>
+      <td>{{ t.kind.value }}</td>
+      <td>{{ name(names, t.agent_id) if t.agent_id else "-" }}</td>
+      <td>{{ t.created_at | ts }}</td>
+      <td>{{ t.last_used_at | ts }}</td>
+      <td>{{ t.expires_at | ts }}</td>
+      <td>{% if t.revoked_at %}<span class="badge bad">revoked</span>{% else %}<span class="badge ok">active</span>{% endif %}</td>
+      <td>
+        {% if not t.revoked_at %}
+        <form method="post" action="/admin/tokens/{{ t.id }}/revoke" class="inline">
+          {{ csrf_field() }}
+          <button type="submit" class="danger">Revoke</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+<div class="panel">
+  <p>Agent tokens are issued from the <a href="/admin/agents">Agents</a> page. A new admin token is shown once; revoking the one this session uses logs you out.</p>
+  <form method="post" action="/admin/tokens/admin" class="inline">
+    {{ csrf_field() }}
+    <button type="submit">New admin token</button>
+  </form>
+</div>
+{% endblock %}

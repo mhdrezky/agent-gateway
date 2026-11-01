@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% from "_macros.html" import csrf_field, status with context %}
+{% block title %}Agents{% endblock %}
+{% block content %}
+<h1>Agents</h1>
+<div class="panel table-wrap">
+  <table>
+    <tr><th>Name</th><th>Roles</th><th>Status</th><th>Created</th><th>Actions</th></tr>
+    {% for a in agents %}
+    <tr>
+      <td><strong>{{ a.name }}</strong><br><code class="muted">{{ a.id }}</code>{% if a.description %}<br><span class="muted">{{ a.description }}</span>{% endif %}</td>
+      <td>
+        <form method="post" action="/admin/agents/{{ a.id }}/roles" class="inline">
+          {{ csrf_field() }}
+          <input type="text" name="roles" value="{{ a.roles | join(', ') }}" placeholder="role-a, role-b">
+          <button type="submit">Save</button>
+        </form>
+      </td>
+      <td>{{ status(a.status) }}</td>
+      <td>{{ a.created_at | ts }}</td>
+      <td>
+        <form method="post" action="/admin/agents/{{ a.id }}/tokens" class="inline">
+          {{ csrf_field() }}
+          <button type="submit">New token</button>
+        </form>
+        <form method="post" action="/admin/agents/{{ a.id }}/status" class="inline">
+          {{ csrf_field() }}
+          {% if a.status.value == "active" %}
+          <input type="hidden" name="status" value="disabled">
+          <button type="submit" class="danger">Disable</button>
+          {% else %}
+          <input type="hidden" name="status" value="active">
+          <button type="submit">Enable</button>
+          {% endif %}
+        </form>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="muted">No agents. Onboard a host with <code>agw-onboard-ssh</code> or create one below.</td></tr>
+    {% endfor %}
+  </table>
+</div>
+<h2>New agent</h2>
+<div class="panel">
+  <form method="post" action="/admin/agents" class="stack">
+    {{ csrf_field() }}
+    <label>Name <input type="text" name="name" required placeholder="web01-agent"><span>Lowercase letters, digits, '.', '_' and '-'.</span></label>
+    <label>Description <input type="text" name="description"></label>
+    <label>Roles <input type="text" name="roles" placeholder="web01-operator"><span>Known roles: {{ roles | join(', ') or 'none yet' }}</span></label>
+    <button type="submit" class="primary">Create agent</button>
+  </form>
+</div>
+{% endblock %}

@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% from "_macros.html" import csrf_field with context %}
+{% block title %}{{ r.name }}{% endblock %}
+{% block content %}
+<h1>{{ r.name }} <span class="muted"><code>{{ r.id }}</code></span></h1>
+<div class="panel">
+  <dl>
+    <dt>Type</dt><dd>{{ r.type.value }}</dd>
+    <dt>Credential</dt><dd>{{ credential or "-" }}</dd>
+    {% for key, value in r.attributes.items() %}
+    <dt>{{ key }}</dt><dd><code>{{ value }}</code></dd>
+    {% endfor %}
+  </dl>
+</div>
+
+{% if r.type.value == "ssh_host" %}
+<h2>Privileged access (ssh.sudo)</h2>
+<div class="panel">
+  {% if r.attributes.get("allow_sudo") %}
+  <p><span class="badge bad">enabled</span> Agents whose role and policy name <code>ssh.sudo</code> can run commands as root here.</p>
+  <form method="post" action="/admin/resources/{{ r.id }}/sudo" class="inline">
+    {{ csrf_field() }}
+    <input type="hidden" name="allow_sudo" value="off">
+    <button type="submit" class="primary">Disable ssh.sudo</button>
+  </form>
+  {% else %}
+  <p><span class="badge">off</span> ssh.sudo is refused on this host, whatever roles and policies say.</p>
+  <form method="post" action="/admin/resources/{{ r.id }}/sudo" class="inline">
+    {{ csrf_field() }}
+    <input type="hidden" name="allow_sudo" value="on">
+    <button type="submit" class="danger">Enable ssh.sudo</button>
+  </form>
+  {% endif %}
+</div>
+
+<h2>Allowed services</h2>
+<div class="panel">
+  <form method="post" action="/admin/resources/{{ r.id }}/services" class="stack">
+    {{ csrf_field() }}
+    <label>systemd units agents may check, tail, or restart
+      <input type="text" name="services" value="{{ r.attributes.get('allowed_services', []) | join(', ') }}" placeholder="docker, caddy">
+      <span>Comma separated. Empty means none.</span>
+    </label>
+    <button type="submit">Save services</button>
+  </form>
+</div>
+{% endif %}
+
+<h2>Tags</h2>
+<div class="panel">
+  <form method="post" action="/admin/resources/{{ r.id }}/tags" class="stack">
+    {{ csrf_field() }}
+    <label>Tags <input type="text" name="tags" value="{{ r.tags | join(', ') }}" placeholder="env:prod"><span><code>env:prod</code> makes medium-risk actions wait for approval.</span></label>
+    <button type="submit">Save tags</button>
+  </form>
+</div>
+
+<h2>Delete</h2>
+<div class="panel">
+  <form method="post" action="/admin/resources/{{ r.id }}/delete" class="inline">
+    {{ csrf_field() }}
+    <input type="text" name="confirm" placeholder="type {{ r.id }}" required>
+    <button type="submit" class="danger">Delete resource</button>
+  </form>
+</div>
+{% endblock %}

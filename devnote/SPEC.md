@@ -838,6 +838,18 @@ Untuk client yang hanya mendukung stdio:
 }
 ```
 
+## 16a. Admin web UI (`/admin`)
+
+Ditambahkan 2026-11-01 (`apps/admin_ui/`). Halaman HTML yang dirender server oleh FastAPI + Jinja2, di app yang sama dengan REST dan `/mcp`.
+
+- **Login:** token admin ditempel sekali di `/admin/login`, diverifikasi dengan rate limit + audit `auth.failed` yang sama seperti REST, lalu ditukar dengan cookie sesi acak (`HttpOnly`, `SameSite=Strict`, `Path=/admin`, `Secure` di HTTPS, TTL 8 jam). Token agent ditolak. Token tidak pernah disimpan di browser.
+- **Sesi:** disimpan di memori proses (satu worker), maksimal 100. Setiap request mengecek ulang bahwa token admin di balik sesi masih aktif; revoke token → sesi langsung berakhir. Restart gateway → login ulang.
+- **CSRF:** setiap form POST membawa token CSRF per sesi (`secrets.compare_digest`). Test memastikan setiap form di setiap halaman membawa token yang benar.
+- **Tanpa JavaScript dan tanpa aset pihak ketiga:** CSS sendiri di `static/admin.css`. Header: `Content-Security-Policy: default-src 'none'; style-src 'self'; ...` (tidak ada `script-src` sama sekali), `X-Frame-Options: DENY`, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`.
+- **Semua perubahan lewat `AdminService`**, jadi tercatat di audit dengan actor = token admin sesi tersebut, sama seperti CLI dan REST admin.
+- **Halaman:** Dashboard, Approvals (detail params + perintah root disorot, approve/reject), Executions (+ detail stdout/stderr), Agents, Tokens (token baru tampil sekali, tidak pernah lewat redirect), Resources (toggle `ssh.sudo`, allowed services, tags, hapus dengan konfirmasi id), Roles, Policies, Credentials (write-only), Audit (+ verify).
+- **Belum ada:** membuat resource baru dari UI (pakai `agw-onboard-ssh`), edit policy yang sudah ada (hapus lalu buat ulang).
+
 ## 17. Konfigurasi
 
 `config/gateway.yaml`:
@@ -987,6 +999,8 @@ Kriteria selesai: Claude Code bisa memanggil `execute_action` via MCP ke gateway
 | `runtime.py` (composition root) | selesai |
 | REST API agent + admin, rate limit gagal-auth, audit `auth.failed` | selesai |
 | MCP server: endpoint `/mcp` di gateway (HTTP, utama) dan bridge stdio `agw-mcp` | selesai |
+| Admin web UI di `/admin` (§16a) | selesai |
+| Action privileged `ssh.sudo` dengan izin berlapis yang bisa dicabut (§1 P3, §11.3) | selesai |
 | CLI: `keygen`, `init`, `serve`, `agent`, `token`, `resource`, `credential`, `role`, `policy`, `approvals`, `audit verify` | selesai |
 | CLI: `backup`, `rotate-master-key` | **belum** |
 | Anchor HMAC harian audit (§14.3) | **belum** (TODO di `file_log.py`) |

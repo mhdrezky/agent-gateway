@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% from "_macros.html" import csrf_field with context %}
+{% block title %}Audit{% endblock %}
+{% block content %}
+<h1>Audit log</h1>
+<div class="panel">
+  <form method="get" action="/admin/audit" class="inline">
+    <select name="event">
+      <option value="">All events</option>
+      {% for e in events %}<option value="{{ e }}" {{ 'selected' if e == event else '' }}>{{ e }}</option>{% endfor %}
+    </select>
+    <button type="submit">Filter</button>
+  </form>
+  <form method="post" action="/admin/audit/verify" class="inline">
+    {{ csrf_field() }}
+    <button type="submit" class="primary">Verify hash chain</button>
+  </form>
+  <p class="muted">Showing the newest {{ entries | length }} of {{ total }} entries.</p>
+</div>
+<div class="panel table-wrap">
+  <table>
+    <tr><th>#</th><th>When</th><th>Event</th><th>Actor</th><th>Action</th><th>Resource / execution</th><th>Details</th></tr>
+    {% for e in entries %}
+    <tr>
+      <td>{{ e.seq }}</td>
+      <td>{{ e.ts | ts }}</td>
+      <td><code>{{ e.event.value }}</code></td>
+      <td>{{ e.actor.type.value }} <code>{{ e.actor.id }}</code></td>
+      <td>{% if e.action %}<code>{{ e.action }}</code>{% endif %}</td>
+      <td>
+        {% if e.resource_id %}<code>{{ e.resource_id }}</code><br>{% endif %}
+        {% if e.execution_id %}<a href="/admin/executions/{{ e.execution_id }}">{{ e.execution_id }}</a>{% endif %}
+      </td>
+      <td>{% if e.details %}<code>{{ e.details | tojson }}</code>{% endif %}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="7" class="muted">No entries.</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}
