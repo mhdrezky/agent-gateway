@@ -1,0 +1,38 @@
+# End-to-end stack: the real gateway image plus an SSH target on one network.
+# Driven by tests/e2e/run_e2e.py; uses its own project name and volume, never the real data.
+name: agw-e2e
+
+services:
+  gateway:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+    image: agent-gateway:local
+    ports:
+      - "127.0.0.1:18080:8080"
+    volumes:
+      - e2e-var:/app/var
+      - ./gateway.e2e.yaml:/app/config/gateway.yaml:ro
+    secrets:
+      - agw_master_key
+    environment:
+      AGW_MASTER_KEY_FILE: /run/secrets/agw_master_key
+    depends_on:
+      - sshd
+
+  sshd:
+    image: lscr.io/linuxserver/openssh-server:latest
+    environment:
+      USER_NAME: deploy
+      PUBLIC_KEY_FILE: /keys/id_ed25519.pub
+      PASSWORD_ACCESS: "false"
+      SUDO_ACCESS: "false"
+    volumes:
+      - ./.work/keys:/keys:ro
+
+volumes:
+  e2e-var:
+
+secrets:
+  agw_master_key:
+    file: ./.work/master.key

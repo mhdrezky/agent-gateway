@@ -24,3 +24,7 @@ config/gateway.yaml
 .idea/
 .DS_Store
 Thumbs.db
+
+# e2e scratch: throwaway keys
+tests/e2e/.work/
+tests/broker/.keys/

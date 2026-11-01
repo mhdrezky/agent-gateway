@@ -76,7 +76,8 @@ class AsyncsshRunner:
                 # An empty trust set (not None, which disables checking) forces every
                 # host key through validate_host_public_key. No auto-accept.
                 known_hosts=([], [], []),
-                server_host_key_algs="default",
+                # Ask for exactly the algorithm of the pinned key.
+                server_host_key_algs=[attrs.host_key_algorithm],
                 client_factory=lambda: _PinnedHostKeyClient(fingerprint),
                 config=None,
                 agent_path=None,

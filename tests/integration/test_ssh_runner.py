@@ -41,6 +41,8 @@ class SshServer:
 @pytest.fixture
 async def ssh_server() -> AsyncIterator[SshServer]:
     host_key = asyncssh.generate_private_key("ssh-ed25519")
+    # Real servers (e.g. OpenSSH) also offer an RSA key, and prefer it by default.
+    rsa_host_key = asyncssh.generate_private_key("ssh-rsa", key_size=2048)
     client_key = asyncssh.generate_private_key("ssh-ed25519")
     commands: list[str | None] = []
 
@@ -52,7 +54,7 @@ async def ssh_server() -> AsyncIterator[SshServer]:
     acceptor = await asyncssh.listen(
         "127.0.0.1",
         0,
-        server_host_keys=[host_key],
+        server_host_keys=[rsa_host_key, host_key],
         authorized_client_keys=asyncssh.import_authorized_keys(
             client_key.export_public_key().decode()
         ),
@@ -125,3 +127,10 @@ async def test_broker_end_to_end_quotes(ssh_server: SshServer) -> None:
     result = await SshBroker().service_restart(ctx, ServiceParams(service="nginx@1.service"))
     assert result.ok, result.error
     assert ssh_server.commands == ["systemctl restart -- nginx@1.service"]
+
+
+async def test_pinned_rsa_key_is_requested_by_algorithm(ssh_server: SshServer) -> None:
+    attrs = ssh_server.attributes(host_key_algorithm="rsa-sha2-256")
+    with pytest.raises(BrokerError, match="host key"):
+        # The fingerprint is of the ed25519 key, so asking for RSA must fail closed.
+        await AsyncsshRunner().run(attrs, ssh_server.credential(), ["true"])

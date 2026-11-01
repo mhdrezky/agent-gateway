@@ -403,6 +403,7 @@ Pola action mendukung wildcard `*` hanya di segmen terakhir.
     "port": 22,
     "username": "deploy",
     "host_key_fingerprint": "SHA256:...",
+    "host_key_algorithm": "ssh-ed25519",
     "allowed_services": ["nginx", "app"]
   },
   "credential_id": "cred_01JB8..."
@@ -590,7 +591,7 @@ Aturan broker:
 | `docker.container.restart` | docker | medium | restart container dalam allowlist |
 | `docker.container.stop` | docker | high | stop container dalam allowlist |
 
-SSH broker memakai `asyncssh`, wajib verifikasi `host_key_fingerprint` (tidak ada auto-accept). Docker broker memakai Docker Engine API; hanya container dengan label `agw.managed=true` atau di allowlist resource yang boleh disentuh.
+SSH broker memakai `asyncssh`, wajib verifikasi `host_key_fingerprint` (tidak ada auto-accept). Koneksi hanya meminta algoritma `host_key_algorithm` (default `ssh-ed25519`), karena server OpenSSH punya beberapa host key dan tanpa batasan ini asyncssh menegosiasikan RSA sehingga fingerprint ed25519 tidak pernah cocok (ditemukan saat uji e2e). Docker broker memakai Docker Engine API; hanya container dengan label `agw.managed=true` atau di allowlist resource yang boleh disentuh.
 
 ## 12. Execution engine
 
@@ -949,9 +950,10 @@ Kriteria selesai: Claude Code bisa memanggil `execute_action` via MCP ke gateway
 | CLI: `keygen`, `init`, `serve`, `agent`, `token`, `resource`, `credential`, `role`, `policy`, `approvals`, `audit verify` | selesai |
 | CLI: `backup`, `rotate-master-key` | **belum** |
 | Anchor HMAC harian audit (§14.3) | **belum** (TODO di `file_log.py`) |
-| Dockerfile + compose | ditulis, **build belum diverifikasi** |
+| Dockerfile + compose | selesai, image ter-build dan berjalan |
 | Test P1–P7 + integrasi REST/MCP/CLI | selesai |
-| Uji end-to-end dengan Claude Code + host SSH nyata | **belum** |
+| Uji e2e: image Docker + server OpenSSH nyata, via REST, CLI, dan MCP stdio (`tests/e2e/run_e2e.py`, 16 cek) | selesai |
+| Uji langsung dari Claude Code ke host milik sendiri | **belum** |
 
 Alur setup: `agw keygen --out secrets/master.key` di host → `docker compose run --rm gateway agw init` (mencetak token admin sekali) → `docker compose up -d`.
 

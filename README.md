@@ -197,6 +197,15 @@ uv run agw approvals approve <approval_id>
 uv run ruff format --check . && uv run ruff check . && uv run mypy && uv run pytest
 ```
 
+End-to-end test against the Docker image and a real OpenSSH server (needs Docker running):
+
+```bash
+docker build -f docker/Dockerfile -t agent-gateway:local .
+uv run python tests/e2e/run_e2e.py          # add --keep to leave the stack up
+```
+
+SSH resources pin one host key: `host_key_fingerprint` is its SHA-256 fingerprint and `host_key_algorithm` (default `ssh-ed25519`) is its type. Get both with `ssh-keyscan -t ed25519 <host> | ssh-keygen -lf -`.
+
 ---
 
 ## Security model (summary)

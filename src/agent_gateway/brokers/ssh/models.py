@@ -4,7 +4,7 @@ Every value that reaches a remote command is constrained here by a strict
 pattern, and is shell-quoted again when the command is built.
 """
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
@@ -20,6 +20,17 @@ DEFAULT_LOG_LINES = 100
 
 ServiceName = Annotated[str, StringConstraints(pattern=SERVICE_PATTERN)]
 
+# The fingerprint pins one key, so the connection must ask for that key's algorithm:
+# a server with several host keys would otherwise present whichever it prefers (often RSA).
+HostKeyAlgorithm = Literal[
+    "ssh-ed25519",
+    "ecdsa-sha2-nistp256",
+    "ecdsa-sha2-nistp384",
+    "ecdsa-sha2-nistp521",
+    "rsa-sha2-512",
+    "rsa-sha2-256",
+]
+
 
 class SshHostAttributes(BaseModel):
     """Schema of ``Resource.attributes`` for ``ssh_host`` resources (SPEC §8.5)."""
@@ -30,6 +41,7 @@ class SshHostAttributes(BaseModel):
     port: int = Field(default=22, ge=1, le=65535)
     username: Annotated[str, StringConstraints(pattern=USERNAME_PATTERN)]
     host_key_fingerprint: Annotated[str, StringConstraints(pattern=FINGERPRINT_PATTERN)]
+    host_key_algorithm: HostKeyAlgorithm = "ssh-ed25519"
     allowed_services: tuple[ServiceName, ...] = ()
     # Prefix privileged commands (restart) with "sudo -n"; never prompts for a password.
     use_sudo: bool = False
