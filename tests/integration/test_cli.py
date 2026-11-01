@@ -114,3 +114,29 @@ def test_agent_token_block_groups_id_agent_and_token(env: dict[str, str]) -> Non
     assert [row[0] for row in rows] == ["id", "agent", "token"]
     assert rows[1][1] == agent_id
     assert rows[2][1].startswith("agw_tok_")
+
+
+def test_resource_sudo_toggle(env: dict[str, str]) -> None:
+    runner.invoke(app, ["init"], env=env)
+    attributes = (
+        '{"host": "10.0.0.5", "username": "agent-gateway", '
+        '"host_key_fingerprint": "SHA256:' + "A" * 43 + '"}'
+    )
+    added = runner.invoke(
+        app, ["resource", "add", "ssh_host", "web01-server", "--attributes", attributes], env=env
+    )
+    assert added.exit_code == 0, added.output
+    resource = json.loads(added.output)
+    assert resource["attributes"]["allow_sudo"] is False
+
+    on = runner.invoke(app, ["resource", "sudo", resource["id"], "--enable"], env=env)
+    assert on.exit_code == 0, on.output
+    assert "ENABLED" in on.output
+    off = runner.invoke(app, ["resource", "sudo", resource["id"], "--disable"], env=env)
+    assert "disabled" in off.output
+    listed = json.loads(runner.invoke(app, ["resource", "list"], env=env).output)
+    assert listed[0]["attributes"]["allow_sudo"] is False
+    assert listed[0]["attributes"]["host"] == "10.0.0.5"  # other attributes kept
+
+    missing = runner.invoke(app, ["resource", "sudo", "res_missing", "--enable"], env=env)
+    assert missing.exit_code == 1

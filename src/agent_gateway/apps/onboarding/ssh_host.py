@@ -38,7 +38,9 @@ from agent_gateway.apps.onboarding.registration import (
 from agent_gateway.apps.onboarding.server_setup import (
     OPTIONAL_GROUPS,
     create_user_with_key,
+    grant_sudo,
     install_key_for_current_user,
+    revoke_sudo,
 )
 from agent_gateway.apps.onboarding.ssh_probe import (
     HostKey,
@@ -200,6 +202,17 @@ async def _authorize_and_verify(
     typer.echo(f"\n  {intro}\n")
     for command in commands:
         typer.echo(f"    {command}")
+    if typer.confirm(
+        f"  Give {user} passwordless sudo (only needed for the privileged ssh.sudo action)?",
+        default=False,
+    ):
+        typer.echo("\n  Also run, as a user with sudo:\n")
+        for command in grant_sudo(user):
+            typer.echo(f"    {command}")
+        typer.echo(
+            f"\n  Revoke it any time on the host with: {' && '.join(revoke_sudo(user))}\n"
+            "  ssh.sudo also stays off until you run `agw resource sudo <res_id> --enable`."
+        )
     typer.echo("")
     while True:
         answer = typer.prompt("Type 'ok' when done, or 'quit' to stop").strip().lower()

@@ -40,7 +40,7 @@ These are non-negotiable. Any change that violates one of them is a bug.
 
 1. **Agents never read the master key.**
 2. **Agents never receive private credentials.** Secrets are decrypted only inside a broker, only for the duration of an action.
-3. **No arbitrary shell execution.** There is no "run this command" action.
+3. **No arbitrary shell execution**, except through explicitly **privileged** actions (today only `ssh.sudo`), which wildcards never grant and which every layer (role, policy, host flag, server sudoers) can revoke on its own.
 4. **Every action must be registered** in the Action Registry with a typed input schema.
 5. **Authorization happens on the server**, never delegated to or trusted from the LLM.
 6. **REST and MCP share the same execution engine.** No interface has its own code path to a broker.
@@ -187,6 +187,19 @@ uv run agw resource add ssh_host homelab-1 --tag env:prod --credential <cred_id>
 uv run agw policy add -a "ssh.service.*" --role operator --tag env:prod
 uv run agw token create --agent <agent_id>         # prints the agent token once
 ```
+
+### Privileged access: `ssh.sudo`
+
+`ssh.sudo` runs any command as root on an SSH host (`sudo -n -- bash -lc <command>`), for agents that install and configure servers (Docker, Caddy, packages). It is off by default and needs all of these, each revocable on its own:
+
+| Layer | Grant | Revoke (takes effect immediately) |
+| ----- | ----- | --------------------------------- |
+| Role | `agw role set web01-operator -a "ssh.*" -a ssh.sudo` | `agw role set web01-operator -a "ssh.*"` |
+| Policy | `agw policy add -a ssh.sudo --role web01-operator --resource <res_id>` | `agw policy delete <pol_id>` |
+| Host flag | `agw resource sudo <res_id> --enable` | `agw resource sudo <res_id> --disable` |
+| Server | `/etc/sudoers.d/agent-gateway` with `NOPASSWD:ALL` (onboarding prints the commands) | `sudo rm -f /etc/sudoers.d/agent-gateway` |
+
+`ssh.*` never includes `ssh.sudo`: it must be named exactly. It is high risk, so with the default `by_risk` policy every command waits for `agw approvals approve`; add `--approval never` to the policy only if you accept unattended root commands.
 
 ### Connect an agent over MCP
 

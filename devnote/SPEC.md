@@ -40,7 +40,7 @@ Agent Gateway adalah gateway self-hosted yang menjadi satu-satunya jalur bagi AI
 | - | ------- | --------------- |
 | P1 | Agent tidak pernah membaca master key. | Master key hanya ada di memori proses gateway; tidak ada endpoint/tool yang mengembalikannya. |
 | P2 | Agent tidak pernah menerima private credential. | Credential hanya didekripsi di dalam broker; output broker disanitasi. Endpoint credential bersifat write-only. |
-| P3 | Tidak ada arbitrary shell execution. | Tidak ada action bertipe "run command". SSH broker hanya menjalankan template perintah tetap dengan parameter tervalidasi. |
+| P3 | Tidak ada arbitrary shell execution, kecuali lewat action **privileged** yang dibuka secara sadar. | Action biasa hanya menjalankan template perintah tetap dengan parameter tervalidasi. Pengecualian (revisi 2026-11-01): `ssh.sudo` (`privileged=True`, risk minimal `high`). Action privileged tidak pernah tercakup wildcard (`ssh.*`); role dan policy harus menyebut id-nya persis, resource harus `allow_sudo: true`, dan server harus memberi sudo ke user gateway. Setiap lapisan bisa dicabut kapan saja secara terpisah. |
 | P4 | Semua action harus terdaftar. | Execution engine menolak action id yang tidak ada di registry. |
 | P5 | Authorization dilakukan di server. | Keputusan dibuat oleh policy engine; input dari LLM hanya dianggap sebagai permintaan. |
 | P6 | MCP dan REST memakai execution engine yang sama. | MCP server adalah thin client ke REST API; tidak punya jalur sendiri ke broker. |
@@ -580,12 +580,27 @@ Aturan broker:
 
 ### 11.3 Action awal (Fase 1, jalur B)
 
+#### Action privileged dan cara mencabutnya
+
+`ssh.sudo` memberi agent akses root penuh, jadi izinnya berlapis dan setiap lapisan bisa ditarik sendiri:
+
+| Lapisan | Memberi | Mencabut (berlaku seketika) |
+| ------- | ------- | --------------------------- |
+| Role | `agw role set <role> -a "ssh.*" -a ssh.sudo` | `agw role set <role> -a "ssh.*"` |
+| Policy | `agw policy add -a ssh.sudo --role <role> --resource <res_id>` | `agw policy delete <pol_id>` |
+| Resource | `agw resource sudo <res_id> --enable` | `agw resource sudo <res_id> --disable` |
+| Agent | – | `agw agent disable <agt_id>` atau `agw token revoke <tok_id>` |
+| Server | file `/etc/sudoers.d/<user>` berisi `NOPASSWD:ALL` | `sudo rm -f /etc/sudoers.d/<user>` |
+
+Dengan policy `by_risk` (default), setiap `ssh.sudo` menunggu approval karena risk-nya `high`. Policy `approval: never` menghilangkan approval; itu keputusan admin yang eksplisit. Perintah lengkap tersimpan di execution (bisa dilihat admin); audit log hanya menyimpan digest-nya.
+
 | Action id | Broker | Risk | Keterangan |
 | --------- | ------ | ---- | ---------- |
 | `ssh.system.info` | ssh | low | uptime, disk, memory |
 | `ssh.service.status` | ssh | low | `systemctl status <service>` |
 | `ssh.service.restart` | ssh | medium | `systemctl restart <service>` |
 | `ssh.logs.tail` | ssh | low | `journalctl -u <service> -n <lines>` (lines ≤ 500) |
+| `ssh.sudo` | ssh | high, **privileged** | `sudo -n -- bash -lc <command>`; hanya jika `allow_sudo: true` di resource dan id disebut persis di role + policy; timeout 600 detik |
 | `docker.container.list` | docker | low | daftar container |
 | `docker.container.logs` | docker | low | log container (tail ≤ 500) |
 | `docker.container.restart` | docker | medium | restart container dalam allowlist |

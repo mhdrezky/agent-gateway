@@ -45,6 +45,8 @@ class SshHostAttributes(BaseModel):
     allowed_services: tuple[ServiceName, ...] = ()
     # Prefix privileged commands (restart) with "sudo -n"; never prompts for a password.
     use_sudo: bool = False
+    # Opt-in per host for the privileged ssh.sudo action; off unless an admin turns it on.
+    allow_sudo: bool = False
 
 
 class NoParams(BaseModel):
@@ -62,3 +64,14 @@ class LogsParams(BaseModel):
 
     service: ServiceName
     lines: int = Field(default=DEFAULT_LOG_LINES, ge=1, le=MAX_LOG_LINES, strict=True)
+
+
+MAX_SUDO_COMMAND_LENGTH = 8000
+
+
+class SudoParams(BaseModel):
+    """A shell command run as root. Only for the privileged ``ssh.sudo`` action."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    command: str = Field(min_length=1, max_length=MAX_SUDO_COMMAND_LENGTH)

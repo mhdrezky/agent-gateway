@@ -1,4 +1,4 @@
-"""SSH broker: the four SSH actions of SPEC §11.3."""
+"""SSH broker: the SSH actions of SPEC §11.3, plus the privileged ``ssh.sudo``."""
 
 from collections.abc import Mapping
 from typing import Any
@@ -12,12 +12,14 @@ from agent_gateway.brokers.ssh.commands import (
     logs_tail_command,
     service_restart_command,
     service_status_command,
+    sudo_command,
 )
 from agent_gateway.brokers.ssh.models import (
     LogsParams,
     NoParams,
     ServiceParams,
     SshHostAttributes,
+    SudoParams,
 )
 from agent_gateway.brokers.ssh.runner import AsyncsshRunner, CommandOutput, SshRunner
 from agent_gateway.modules.action_registry.decorators import action, collect_actions
@@ -27,6 +29,7 @@ from agent_gateway.modules.resources.models import ResourceType
 
 # systemctl status: 0 = active, 3 = not running. Both are valid answers.
 STATUS_OK_CODES = frozenset({0, 3})
+SUDO_TIMEOUT_SECONDS = 600
 
 
 def host_attributes(ctx: ActionContext) -> SshHostAttributes:
@@ -152,3 +155,23 @@ class SshBroker:
             )
 
         return await run_safely(ctx, "ssh.logs.tail", body)
+
+    @action(
+        id="ssh.sudo",
+        resource_type=ResourceType.SSH_HOST,
+        risk=RiskLevel.HIGH,
+        description=(
+            "PRIVILEGED: run a shell command as root (sudo -n bash -lc). Works only on hosts "
+            "with allow_sudo on, for agents whose role and policy name ssh.sudo exactly."
+        ),
+        input_model=SudoParams,
+        timeout_seconds=SUDO_TIMEOUT_SECONDS,
+        privileged=True,
+    )
+    async def sudo(self, ctx: ActionContext, params: SudoParams) -> ActionResult:
+        async def body() -> ActionResult:
+            command = sudo_command(params.command, host_attributes(ctx))
+            output = await self._run_one(ctx, command)
+            return self._result(ctx, output, output.exit_code == 0)
+
+        return await run_safely(ctx, "ssh.sudo", body)

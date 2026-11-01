@@ -37,3 +37,21 @@ def create_user_with_key(user: str, public_key: str, groups: list[str]) -> list[
     ]
     commands += [f"sudo usermod -aG {shlex.quote(group)} {u}" for group in groups]
     return commands
+
+
+def sudoers_path(user: str) -> str:
+    return f"/etc/sudoers.d/{user}"
+
+
+def grant_sudo(user: str) -> list[str]:
+    """Passwordless sudo for ``user``, in its own file so it can be revoked on its own."""
+    path = shlex.quote(sudoers_path(user))
+    rule = shlex.quote(f"{user} ALL=(ALL) NOPASSWD:ALL")
+    return [
+        f"echo {rule} | sudo tee {path} > /dev/null",
+        f"sudo chmod 440 {path} && sudo visudo -cf {path}",
+    ]
+
+
+def revoke_sudo(user: str) -> list[str]:
+    return [f"sudo rm -f {shlex.quote(sudoers_path(user))}"]

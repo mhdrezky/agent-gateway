@@ -219,6 +219,7 @@ async def test_interactive_onboarding(
             False,  # user does not exist yet: show the create-user commands
             True,  # add to systemd-journal
             False,  # do not add to docker
+            True,  # passwordless sudo
             "later",  # ignored, asks again
             "ok",  # key added to authorized_keys
             "tybozen",  # base name
@@ -239,6 +240,8 @@ async def test_interactive_onboarding(
     assert 'sudo adduser --disabled-password --gecos "" agent-gateway' in out
     assert "sudo usermod -aG systemd-journal agent-gateway" in out
     assert "usermod -aG docker" not in out
+    assert "agent-gateway ALL=(ALL) NOPASSWD:ALL" in out
+    assert "sudo rm -f /etc/sudoers.d/agent-gateway" in out
     assert "ssh.system.info via the gateway" in out
     assert "agw_tok_" in out
     agents = await gw.admin.list_agents(CLI_PRINCIPAL)

@@ -29,7 +29,7 @@ from agent_gateway.modules.approvals.models import Approval, ApprovalStatus
 from agent_gateway.modules.approvals.ports import ApprovalService
 from agent_gateway.modules.audit.models import Actor, ActorType, AuditEventType, AuditRecord
 from agent_gateway.modules.audit.ports import AuditLog
-from agent_gateway.modules.authorization.engine import any_pattern_matches, selector_matches
+from agent_gateway.modules.authorization.engine import grants, selector_matches
 from agent_gateway.modules.authorization.models import (
     AuthorizationRequest,
     Policy,
@@ -187,7 +187,7 @@ class GatewayExecutionEngine:
         return [
             action
             for action in self._registry.all()
-            if any(any_pattern_matches(r.actions, action.definition.id) for r in roles)
+            if any(grants(r.actions, action.definition) for r in roles)
         ]
 
     async def visible_resources(self, principal: Principal) -> list[Resource]:

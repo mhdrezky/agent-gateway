@@ -57,7 +57,7 @@ def _ctx(**kwargs: Any) -> Any:
     return make_ctx(ResourceType.SSH_HOST, attrs, kwargs.pop("credential", KEY), **kwargs)
 
 
-def test_registers_four_actions_with_spec_risks() -> None:
+def test_registers_actions_with_spec_risks() -> None:
     registry = InMemoryActionRegistry()
     SshBroker(RecordingRunner()).register(registry)
     risks = {a.definition.id: a.definition.risk for a in registry.all()}
@@ -66,7 +66,10 @@ def test_registers_four_actions_with_spec_risks() -> None:
         "ssh.service.restart": RiskLevel.MEDIUM,
         "ssh.service.status": RiskLevel.LOW,
         "ssh.system.info": RiskLevel.LOW,
+        "ssh.sudo": RiskLevel.HIGH,
     }
+    privileged = [a.definition.id for a in registry.all() if a.definition.privileged]
+    assert privileged == ["ssh.sudo"]
     assert all(a.definition.resource_type is ResourceType.SSH_HOST for a in registry.all())
 
 

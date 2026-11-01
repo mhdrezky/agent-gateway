@@ -16,7 +16,7 @@ import typer
 from pydantic import BaseModel
 
 from agent_gateway.common.envfile import ADMIN_TOKEN_VAR, DEFAULT_ENV_FILE, save_env_var
-from agent_gateway.common.errors import GatewayError
+from agent_gateway.common.errors import GatewayError, ResourceNotFoundError
 from agent_gateway.config import Settings, load_settings
 from agent_gateway.modules.administration.service import CLI_PRINCIPAL
 from agent_gateway.modules.approvals.models import ApprovalStatus
@@ -30,7 +30,7 @@ from agent_gateway.modules.authorization.models import (
 from agent_gateway.modules.credentials.models import CredentialType, SecretPayload
 from agent_gateway.modules.crypto.keyring import generate_master_key
 from agent_gateway.modules.identity.models import AgentStatus, IssuedToken, TokenKind
-from agent_gateway.modules.resources.models import ResourceType
+from agent_gateway.modules.resources.models import Resource, ResourceType
 from agent_gateway.runtime import Gateway, build_gateway
 
 app = typer.Typer(help="Agent Gateway admin CLI.", no_args_is_help=True)
@@ -331,6 +331,30 @@ def resource_list(config: ConfigOption = None) -> None:
 def resource_delete(resource_id: str, config: ConfigOption = None) -> None:
     deleted = _run(config, lambda gw: gw.admin.delete_resource(CLI_PRINCIPAL, resource_id))
     typer.echo("deleted" if deleted else "not found")
+
+
+@resource_app.command("sudo")
+def resource_sudo(
+    resource_id: str,
+    enable: Annotated[
+        bool, typer.Option("--enable/--disable", help="Allow or stop ssh.sudo on this host.")
+    ],
+    config: ConfigOption = None,
+) -> None:
+    """Turn the privileged ssh.sudo action on or off for one SSH host. Takes effect at once."""
+
+    async def go(gw: Gateway) -> Resource:
+        resources = await gw.admin.list_resources(CLI_PRINCIPAL, type=ResourceType.SSH_HOST)
+        current = next((r for r in resources if r.id == resource_id), None)
+        if current is None:
+            raise ResourceNotFoundError(f"ssh_host resource {resource_id} not found")
+        return await gw.admin.update_resource(
+            CLI_PRINCIPAL, resource_id, attributes={**current.attributes, "allow_sudo": enable}
+        )
+
+    updated = _run(config, go)
+    state = "ENABLED" if updated.attributes.get("allow_sudo") else "disabled"
+    typer.echo(f"ssh.sudo is {state} on {updated.name} ({updated.id}).")
 
 
 def _read_secret(value_file: Path | None) -> str:
