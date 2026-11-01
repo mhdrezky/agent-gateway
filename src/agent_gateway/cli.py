@@ -42,6 +42,9 @@ role_app = typer.Typer(help="Manage roles.", no_args_is_help=True)
 policy_app = typer.Typer(help="Manage policies.", no_args_is_help=True)
 approvals_app = typer.Typer(help="Review pending approvals.", no_args_is_help=True)
 audit_app = typer.Typer(help="Inspect the audit log.", no_args_is_help=True)
+elevation_app = typer.Typer(
+    help="Time-boxed windows for privileged actions (ssh.sudo).", no_args_is_help=True
+)
 for sub, name in [
     (agent_app, "agent"),
     (token_app, "token"),
@@ -51,6 +54,7 @@ for sub, name in [
     (policy_app, "policy"),
     (approvals_app, "approvals"),
     (audit_app, "audit"),
+    (elevation_app, "elevation"),
 ]:
     app.add_typer(sub, name=name)
 
@@ -474,6 +478,42 @@ def audit_verify(config: ConfigOption = None) -> None:
     _print(result)
     if not result.ok:
         raise typer.Exit(1)
+
+
+# ---- elevation windows ------------------------------------------------------------------
+
+
+@elevation_app.command("list")
+def elevation_list(
+    all_: Annotated[bool, typer.Option("--all", help="Include expired and revoked.")] = False,
+    config: ConfigOption = None,
+) -> None:
+    _print(_run(config, lambda gw: gw.admin.list_elevations(CLI_PRINCIPAL, active_only=not all_)))
+
+
+@elevation_app.command("grant")
+def elevation_grant(
+    agent: Annotated[str, typer.Option(help="Agent id.")],
+    resource: Annotated[str, typer.Option(help="Resource id.")],
+    minutes: Annotated[int, typer.Option(min=1, max=240)] = 15,
+    action: str = "ssh.sudo",
+    config: ConfigOption = None,
+) -> None:
+    """Open a window now, without waiting for an approval."""
+    _print(
+        _run(
+            config,
+            lambda gw: gw.admin.grant_elevation(
+                CLI_PRINCIPAL, agent_id=agent, resource_id=resource, action=action, minutes=minutes
+            ),
+        )
+    )
+
+
+@elevation_app.command("revoke")
+def elevation_revoke(elevation_id: str, config: ConfigOption = None) -> None:
+    """Close a window early; the next privileged command needs approval again."""
+    _print(_run(config, lambda gw: gw.admin.revoke_elevation(CLI_PRINCIPAL, elevation_id)))
 
 
 if __name__ == "__main__":

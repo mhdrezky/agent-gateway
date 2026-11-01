@@ -86,6 +86,7 @@ async def test_every_page_renders_with_security_headers(
     assert response.headers["x-frame-options"] == "DENY"
     assert response.headers["cache-control"] == "no-store"
     assert "<script" not in response.text
+    assert "Macro" not in response.text  # a context variable shadowed by an imported macro
     # Every POST form carries this session's CSRF token (not an empty one).
     posts = response.text.count('method="post"')
     tokens = CSRF_ANY.findall(response.text)

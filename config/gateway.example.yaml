@@ -11,6 +11,7 @@ master_key_file: /run/secrets/agw_master_key
 
 approvals:
   ttl_minutes: 15
+  elevation_minutes: 15   # approved ssh.sudo opens a window this long; 0 = approve every command
 
 execution:
   max_concurrent: 8

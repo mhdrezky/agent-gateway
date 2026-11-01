@@ -30,6 +30,10 @@ class ServerSettings(_Section):
 
 class ApprovalSettings(_Section):
     ttl_minutes: int = Field(default=15, ge=1, le=1440)
+    # Approving a privileged action (ssh.sudo) opens a window of this many minutes in which
+    # the same agent may run that action on the same resource without asking again.
+    # 0 turns windows off: every privileged command then needs its own approval.
+    elevation_minutes: int = Field(default=15, ge=0, le=240)
 
 
 class ExecutionSettings(_Section):

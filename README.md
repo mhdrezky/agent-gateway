@@ -216,7 +216,9 @@ uv run agw token create --agent <agent_id>         # prints the agent token once
 | Host flag | `agw resource sudo <res_id> --enable` | `agw resource sudo <res_id> --disable` |
 | Server | `/etc/sudoers.d/agent-gateway` with `NOPASSWD:ALL` (onboarding prints the commands) | `sudo rm -f /etc/sudoers.d/agent-gateway` |
 
-`ssh.*` never includes `ssh.sudo`: it must be named exactly. It is high risk, so with the default `by_risk` policy every command waits for `agw approvals approve`; add `--approval never` to the policy only if you accept unattended root commands.
+`ssh.*` never includes `ssh.sudo`: it must be named exactly. It is high risk, so with the default `by_risk` policy the first command waits for approval.
+
+**Sudo windows.** Approving an `ssh.sudo` command opens a 15-minute window (`approvals.elevation_minutes`, 0 turns it off) in which the same agent may run any `ssh.sudo` command on the same resource without asking again. After 15 minutes the next command needs approval again, which opens a new window. A window never overrides the other layers: role, policy, host flag, and sudoers still apply. Close one early in the UI (Approvals or the resource page, "End now") or with `agw elevation revoke <elv_id>`; open one by hand with `agw elevation grant --agent <agt_id> --resource <res_id> --minutes 15`. Openings and closings are audited (`elevation.granted`, `elevation.revoked`).
 
 ### Connect an agent over MCP
 

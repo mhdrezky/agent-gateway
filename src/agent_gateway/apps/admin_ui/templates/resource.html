@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import csrf_field with context %}
+{% from "_macros.html" import csrf_field, name with context %}
 {% block title %}{{ r.name }}{% endblock %}
 {% block content %}
 <h1>{{ r.name }} <span class="muted"><code>{{ r.id }}</code></span></h1>
@@ -22,6 +22,30 @@
     {{ csrf_field() }}
     <input type="hidden" name="allow_sudo" value="off">
     <button type="submit" class="primary">Disable ssh.sudo</button>
+  </form>
+  <h2>Sudo windows</h2>
+  <p class="muted">Approving one ssh.sudo command opens a window in which the same agent runs ssh.sudo here without asking again. You can also open one by hand.</p>
+  {% for w in windows %}
+  <form method="post" action="/admin/elevations/{{ w.id }}/revoke" class="inline">
+    {{ csrf_field() }}
+    <input type="hidden" name="next" value="/admin/resources/{{ r.id }}">
+    {{ name(names, w.agent_id) }} · <code>{{ w.action }}</code> · ends {{ w.expires_at | ts }}
+    <span class="badge warn">{{ w.expires_at | minutes_left(now) }} min left</span>
+    <button type="submit" class="danger">End now</button>
+  </form><br>
+  {% else %}
+  <p class="muted">No open window.</p>
+  {% endfor %}
+  <form method="post" action="/admin/elevations" class="inline">
+    {{ csrf_field() }}
+    <input type="hidden" name="resource" value="{{ r.id }}">
+    <input type="hidden" name="action" value="ssh.sudo">
+    <input type="hidden" name="next" value="/admin/resources/{{ r.id }}">
+    <select name="agent" required>
+      {% for a in agents %}<option value="{{ a.id }}">{{ a.name }}</option>{% endfor %}
+    </select>
+    <input type="text" name="minutes" value="{{ elevation_minutes }}" size="4" aria-label="minutes"> min
+    <button type="submit">Open window</button>
   </form>
   {% else %}
   <p><span class="badge">off</span> ssh.sudo is refused on this host, whatever roles and policies say.</p>

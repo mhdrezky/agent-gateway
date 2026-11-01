@@ -51,6 +51,10 @@ router = APIRouter(prefix="/admin", include_in_schema=False)
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.globals["version"] = __version__
 templates.env.filters["pretty"] = lambda value: json.dumps(value, indent=2, sort_keys=True)
+# Whole minutes left, rounded up: a window with 14:01 left shows "15 min left".
+templates.env.filters["minutes_left"] = lambda end, now: max(
+    0, -int(-(end - now).total_seconds() // 60)
+)
 templates.env.filters["ts"] = lambda value: (
     value.strftime("%Y-%m-%d %H:%M:%S UTC") if isinstance(value, datetime) else "-"
 )
@@ -271,7 +275,9 @@ async def approvals_page(
         session,
         "approvals.html",
         rows=rows,
-        status=status,
+        windows=await gateway.admin.list_elevations(session.principal),
+        now=gateway.clock.now(),
+        shown=status,
         auto=bool(auto),
         names=await _names(gateway, session),
         statuses=["pending", "approved", "rejected", "expired", "all"],
@@ -297,6 +303,39 @@ async def reject(request: Request, session: SessionDep, approval_id: str) -> Res
     ):
         await gateway.engine.dispatch_approvals()
     return _back("/admin/approvals")
+
+
+@router.post("/elevations")
+async def grant_elevation(request: Request, session: SessionDep) -> Response:
+    form = await _form(request, session)
+    resource_id = _text(form, "resource")
+    try:
+        minutes = int(_text(form, "minutes", "15"))
+    except ValueError:
+        minutes = 0
+    await _attempt(
+        session,
+        _gateway(request).admin.grant_elevation(
+            session.principal,
+            agent_id=_text(form, "agent"),
+            resource_id=resource_id,
+            action=_text(form, "action", "ssh.sudo"),
+            minutes=minutes,
+        ),
+        f"Window opened for {minutes} minutes.",
+    )
+    return _back(_text(form, "next") or "/admin/approvals")
+
+
+@router.post("/elevations/{elevation_id}/revoke")
+async def revoke_elevation(request: Request, session: SessionDep, elevation_id: str) -> Response:
+    form = await _form(request, session)
+    await _attempt(
+        session,
+        _gateway(request).admin.revoke_elevation(session.principal, elevation_id),
+        "Window closed; the next privileged command needs approval again.",
+    )
+    return _back(_text(form, "next") or "/admin/approvals")
 
 
 # ---- executions -----------------------------------------------------------------------------
@@ -475,12 +514,22 @@ async def resource_page(request: Request, session: SessionDep, resource_id: str)
         session.flash("error", f"Resource {resource_id} not found.")
         return _back("/admin/resources")
     credentials = {c.id: c.name for c in await gateway.admin.list_credentials(session.principal)}
+    windows = [
+        w
+        for w in await gateway.admin.list_elevations(session.principal)
+        if w.resource_id == resource.id
+    ]
     return _render(
         request,
         session,
         "resource.html",
         r=resource,
         credential=credentials.get(resource.credential_id or "", resource.credential_id),
+        windows=windows,
+        agents=await gateway.admin.list_agents(session.principal),
+        names=await _names(gateway, session),
+        now=gateway.clock.now(),
+        elevation_minutes=gateway.settings.approvals.elevation_minutes or 15,
     )
 
 

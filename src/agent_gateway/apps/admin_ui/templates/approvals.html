@@ -6,12 +6,36 @@
 <h1>Approvals</h1>
 <p>
   {% for s in statuses %}
-  <a href="/admin/approvals?status={{ s }}" class="badge {{ 'warn' if s == status else '' }}">{{ s }}</a>
+  <a href="/admin/approvals?status={{ s }}" class="badge {{ 'warn' if s == shown else '' }}">{{ s }}</a>
   {% endfor %}
   ·
-  {% if auto %}<a href="/admin/approvals?status={{ status }}">Stop auto-refresh</a>
-  {% else %}<a href="/admin/approvals?status={{ status }}&auto=1">Auto-refresh every 10 s</a>{% endif %}
+  {% if auto %}<a href="/admin/approvals?status={{ shown }}">Stop auto-refresh</a>
+  {% else %}<a href="/admin/approvals?status={{ shown }}&auto=1">Auto-refresh every 10 s</a>{% endif %}
 </p>
+{% if windows %}
+<h2>Open sudo windows</h2>
+<div class="panel table-wrap">
+  <p class="muted">Inside a window the agent runs this privileged action on this resource without asking again. Role, policy, <code>allow_sudo</code>, and the server's sudoers still apply.</p>
+  <table>
+    <tr><th>Agent</th><th>Resource</th><th>Action</th><th>Opened</th><th>Ends</th><th></th></tr>
+    {% for w in windows %}
+    <tr>
+      <td>{{ name(names, w.agent_id) }}</td>
+      <td>{{ name(names, w.resource_id) }}</td>
+      <td><code>{{ w.action }}</code></td>
+      <td>{{ w.granted_at | ts }}<br><span class="muted">{{ w.granted_by }}</span></td>
+      <td>{{ w.expires_at | ts }}<br><span class="badge warn">{{ w.expires_at | minutes_left(now) }} min left</span></td>
+      <td>
+        <form method="post" action="/admin/elevations/{{ w.id }}/revoke" class="inline">
+          {{ csrf_field() }}
+          <button type="submit" class="danger">End now</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
 {% for approval, e in rows %}
 <div class="panel">
   <dl>
@@ -49,6 +73,6 @@
   {% endif %}
 </div>
 {% else %}
-<div class="panel muted">No {{ status if status != "all" else "" }} approvals.</div>
+<div class="panel muted">No {{ shown if shown != "all" else "" }} approvals.</div>
 {% endfor %}
 {% endblock %}

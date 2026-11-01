@@ -659,6 +659,17 @@ Detail implementasi (Fase 2, `modules/execution/engine.py`):
 - Agent mengetahui hasilnya dengan polling `GET /v1/executions/{id}` (atau tool MCP `get_execution`).
 - Expiry diperiksa oleh background task tiap 30 detik dan saat approval diakses.
 
+## 13a. Jendela sudo (elevation)
+
+Ditambahkan 2026-11-01 (`modules/elevation/`). Tujuannya: satu approval untuk satu sesi kerja, bukan satu approval per perintah.
+
+- Saat admin meng-approve action **privileged** (`ssh.sudo`), engine membuka **elevation** untuk pasangan (agent, resource, action) selama `approvals.elevation_minutes` (default 15, `0` = mati, maks 240).
+- Selama jendela aktif, keputusan policy `allow` + `approval_required` untuk action privileged itu diubah menjadi tanpa approval; `reason` execution memuat `elevated by elv_... until ...`.
+- Jendela **tidak pernah** mengubah deny menjadi allow: role, policy, `allow_sudo` di resource, dan sudoers server tetap berlaku dan tetap bisa mencabut akses seketika.
+- Jendela hanya berlaku untuk agent, resource, dan action yang sama persis.
+- Admin bisa menutup jendela lebih awal (UI: Approvals/Resource → "End now"; CLI: `agw elevation revoke`) atau membuka jendela manual (`agw elevation grant`, atau form di halaman resource).
+- Disimpan di `var/elevations.json` (id `elv_<ULID>`). Pembukaan dan penutupan dicatat di audit (`elevation.granted`, `elevation.revoked`) sebelum disimpan (fail closed).
+
 ## 14. Audit log
 
 ### 14.1 Format entry
@@ -1001,6 +1012,7 @@ Kriteria selesai: Claude Code bisa memanggil `execute_action` via MCP ke gateway
 | MCP server: endpoint `/mcp` di gateway (HTTP, utama) dan bridge stdio `agw-mcp` | selesai |
 | Admin web UI di `/admin` (§16a) | selesai |
 | Action privileged `ssh.sudo` dengan izin berlapis yang bisa dicabut (§1 P3, §11.3) | selesai |
+| Jendela sudo 15 menit setelah approval (§13a) | selesai |
 | CLI: `keygen`, `init`, `serve`, `agent`, `token`, `resource`, `credential`, `role`, `policy`, `approvals`, `audit verify` | selesai |
 | CLI: `backup`, `rotate-master-key` | **belum** |
 | Anchor HMAC harian audit (§14.3) | **belum** (TODO di `file_log.py`) |

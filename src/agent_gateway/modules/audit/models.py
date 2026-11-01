@@ -38,6 +38,8 @@ class AuditEventType(StrEnum):
     EXECUTION_STARTED = "execution.started"
     EXECUTION_SUCCEEDED = "execution.succeeded"
     EXECUTION_FAILED = "execution.failed"
+    ELEVATION_GRANTED = "elevation.granted"
+    ELEVATION_REVOKED = "elevation.revoked"
 
 
 class ActorType(StrEnum):
