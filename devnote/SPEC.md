@@ -27,6 +27,7 @@
 19. [Strategi testing](#19-strategi-testing)
 20. [Rencana implementasi bertahap](#20-rencana-implementasi-bertahap)
 21. [Pertanyaan terbuka](#21-pertanyaan-terbuka)
+22. [Kontrak `agentgate-gateway/1`](#22-kontrak-agentgate-gateway1)
 
 ---
 
@@ -967,6 +968,37 @@ Broker GitHub, Cloudflare, RunPod, HTTP, dan kanal notifikasi approval (§13). S
 
 Kriteria selesai per broker: minimal 3 action terdaftar dengan input schema, test dengan fake/mocked API, dan dokumentasi action di `devnote/`.
 
+### 20.5 Fase 4 — Integrasi agentgate (kontrak `agentgate-gateway/1`)
+
+Gateway menjadi tempat semua aksi dan kredensial untuk aplikasi agentgate (console, assistant, Studio), menggantikan "doorman" milik agentgate. Desain dan keputusannya ada di repo agentgate: `devnotes/design-gateway-split-20261103.md` (K1–K8, D1–D15). Kontraknya dirangkum di §22.
+
+Slice, masing-masing di branch sendiri, dengan SPEC diubah lebih dulu:
+
+| # | Slice | Isi |
+| - | ----- | --- |
+| 1 | MCP Streamable HTTP | Endpoint `/mcp/actions` dengan bearer token agent, di samping stdio |
+| 2 | Identitas user | Verifikasi `X-User-Token` (OIDC: JWKS, `iss`, `aud`, `exp`), `users.json` (subject/grup → role), principal *user atas nama agent* |
+| 3 | Otorisasi delegasi | Scope = role user ∩ role agent; policy subject `user` dan `user_role` |
+| 4 | Approval `requester` | Mode approval baru yang diputuskan oleh user peminta; REST `GET /v1/approvals/mine`, `POST /v1/approvals/{id}/decide` |
+| 5 | Tool profile MCP | Satu tool per action (`sql.query` → `sql_query`), `resource_id` enum, anotasi `readOnlyHint` / `destructiveHint`, `_meta` |
+| 6 | Broker `sql` | Port SQL gate agentgate (satu `SELECT`, tabel yang diizinkan, row cap, `limited`) beserta tesnya. Postgres dulu, T-SQL menyusul |
+| 7 | Broker `smtp` | Port konektor mail agentgate (domain yang diizinkan, STARTTLS), action `mail.send` risk `medium` approval `requester`. Mailpit di compose uji |
+| 8 | Correlation id | Dari `X-Correlation-Id` / `_meta` ke execution dan audit |
+| 9 | `agw apply <seed.yaml>` | Onboarding deklaratif dan idempoten (agent, role, policy, resource, user, referensi credential) |
+| 10 | Endpoint model | Resource `model`, `GET /v1/models`, `POST /v1/models/{name}/chat` (non-streaming), mengembalikan `model_id` persis |
+
+**Tidak boleh terganggu (gate setiap slice):**
+- Broker SSH dan Docker tidak disentuh.
+- Tanpa `X-User-Token`, keputusan otorisasi sama seperti fase 2.
+- Meta-tool MCP dan transport stdio tetap ada.
+- Approval admin tetap.
+- `var/` fase 2 tetap terbaca (migrasi berurutan bila `schema_version` naik).
+- e2e SSH `tests/e2e/run_e2e.py` (16 cek) dan tes P1–P7 lulus.
+
+Instance gateway untuk agentgate terpisah dari instance homelab, dengan master key, `var/`, dan onboarding sendiri, serta `ssh.*` dan `docker.*` dimatikan lewat `actions.disabled`.
+
+Kriteria selesai fase 4: tes kontrak agentgate (`e2e/contract/` di repo agentgate) lulus terhadap image gateway bertag, dan gate di atas lulus.
+
 ## 21. Pertanyaan terbuka
 
 1. **Kanal approval tambahan (Fase 3):** kandidat utama Telegram bot long polling (lihat §13). Diputuskan setelah v1 dipakai.
@@ -974,3 +1006,18 @@ Kriteria selesai per broker: minimal 3 action terdaftar dengan input schema, tes
 3. **Akses remote:** apakah gateway akan diakses dari luar mesin (mis. via Cloudflare Tunnel)? Jika ya, perlu TLS dan mungkin mTLS.
 4. **Retensi:** berapa lama file `executions/` dan `audit/` disimpan? Usulan default: execution 90 hari, audit tanpa batas.
 5. **Output sensitif:** apakah output log (`ssh.logs.tail`, `docker.container.logs`) perlu filter redaksi pola secret umum (token, password)?
+
+## 22. Kontrak `agentgate-gateway/1`
+
+Sumber kebenaran kontrak ada di repo agentgate: `app/docs/gateway-contract.md` (bahasa Inggris), dengan tipe wire di `packages/contracts/src/agentgate_contracts/gateway.py` dan tes kesesuaian di `e2e/contract/`. Ringkasan untuk implementasi gateway:
+
+| Bagian | Isi |
+| ------ | --- |
+| Versi | `GET /v1/contract` tanpa auth → `{"versions": ["agentgate-gateway/1"]}` |
+| Identitas | `Authorization: Bearer <token agent>` selalu; `X-User-Token: <access token OIDC user>` bila panggilan untuk user; `X-Correlation-Id` opsional. Token user palsu atau kedaluwarsa → `401`; user valid yang tidak ada di `users.json` → scope kosong |
+| Tool (MCP) | `/mcp/actions`, Streamable HTTP. `tools/list`: satu tool per action yang boleh dipakai pemanggil, dengan nama `^[a-zA-Z0-9_-]{1,64}$` (titik → garis bawah) dan `resource_id` enum di `inputSchema`. `tools/call` → `structuredContent` = `ToolOutcome` (`ok`, `pending`, `denied`, `error`), dari status execution: `succeeded` → `ok`, `pending_approval` → `pending`, `denied` → `denied`, lainnya → `error` |
+| Model | `GET /v1/models` → `[{name, model_id}]`; `POST /v1/models/{name}/chat` dengan `ChatIn` → `ChatOut` (selalu ada `model_id` bila `ok`). Nama yang tidak boleh dipakai → `status: denied`; nama tak dikenal → `404 model_not_found` |
+| Approval user | `GET /v1/approvals/mine?status=` dan `POST /v1/approvals/{id}/decide` `{"decision": "confirm"\|"reject"}`, wajib `X-User-Token` (tanpa itu `401`). Approval orang lain atau mode admin → `404 approval_not_found`; sudah diputuskan → `409 approval_not_pending`. **Tidak pernah tersedia sebagai tool MCP** |
+| Cek nama | `POST /v1/bind` `{models, tools, resources}` → `200 {models: {name: model_id}}` atau `409 names_missing` dengan daftar yang hilang; diaudit; butuh user author atau reviewer |
+| `users.json` | Item `{id, match: {subject} \| {group}, roles}`; role user = gabungan semua item yang cocok |
+| Error | `{"error": {"code", "message"}}` dengan kode §15.3, ditambah `approval_not_found`, `model_not_found`, `names_missing` |

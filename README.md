@@ -127,6 +127,7 @@ agent-gateway/
 | 1C    | Governance  | Audit log with hash chain, approval workflow                              |
 | 2     | Integration | Execution engine, REST API, MCP server, CLI, Docker deployment            |
 | 3     | Expansion   | GitHub, Cloudflare, RunPod, HTTP brokers, approval notifications          |
+| 4     | agentgate   | Contract `agentgate-gateway/1`: user identity, requester approvals, per-action MCP tools, SQL and SMTP brokers, model endpoint, `agw apply` (SPEC §20.5, §22) |
 
 Tracks 1A, 1B, and 1C run in parallel on top of the Phase 0 contracts.
 
