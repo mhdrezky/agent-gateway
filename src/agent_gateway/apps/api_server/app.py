@@ -8,10 +8,13 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.routing import Route
 
 from agent_gateway import __version__
+from agent_gateway.apps.admin_ui.setup import install_admin_ui
 from agent_gateway.apps.api_server import routes_admin, routes_agent
 from agent_gateway.apps.api_server.deps import FailureLimiter
+from agent_gateway.apps.api_server.mcp_http import MCP_PATH, build_mcp_server, mcp_endpoint
 from agent_gateway.common.errors import GatewayError
 from agent_gateway.runtime import Gateway
 
@@ -30,21 +33,25 @@ def _error(
 def create_app(gateway: Gateway, *, manage_lifecycle: bool = True) -> FastAPI:
     """Build the app. With ``manage_lifecycle`` the app starts and stops the gateway."""
 
+    mcp_server = build_mcp_server(gateway)
+    limiter = FailureLimiter(gateway.settings.rate_limit.auth_failures_per_minute, gateway.clock)
+    mcp_app = mcp_endpoint(mcp_server, gateway, limiter, gateway.settings.server.public_hosts)
+
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         if manage_lifecycle:
             await gateway.start()
         try:
-            yield
+            async with mcp_server.session_manager.run():
+                yield
         finally:
             if manage_lifecycle:
                 await gateway.stop()
 
     app = FastAPI(title="Agent Gateway", version=__version__, lifespan=lifespan)
     app.state.gateway = gateway
-    app.state.limiter = FailureLimiter(
-        gateway.settings.rate_limit.auth_failures_per_minute, gateway.clock
-    )
+    app.state.limiter = limiter
+    app.router.routes.append(Route(MCP_PATH, endpoint=mcp_app))
 
     @app.exception_handler(GatewayError)
     async def gateway_error(_: Request, exc: GatewayError) -> JSONResponse:
@@ -71,4 +78,5 @@ def create_app(gateway: Gateway, *, manage_lifecycle: bool = True) -> FastAPI:
 
     app.include_router(routes_agent.router)
     app.include_router(routes_admin.router)
+    install_admin_ui(app, gateway)
     return app

@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Resources{% endblock %}
+{% block content %}
+<h1>Resources</h1>
+<div class="panel table-wrap">
+  <table>
+    <tr><th>Name</th><th>Type</th><th>Tags</th><th>Host</th><th>ssh.sudo</th></tr>
+    {% for r in resources %}
+    <tr>
+      <td><a href="/admin/resources/{{ r.id }}"><strong>{{ r.name }}</strong></a><br><code class="muted">{{ r.id }}</code></td>
+      <td>{{ r.type.value }}</td>
+      <td>{% for t in r.tags %}<span class="badge">{{ t }}</span> {% endfor %}</td>
+      <td>{% if r.attributes.host is defined %}<code>{{ r.attributes.get("username", "") }}@{{ r.attributes.host }}:{{ r.attributes.get("port", 22) }}</code>{% endif %}</td>
+      <td>{% if r.type.value == "ssh_host" %}{% if r.attributes.get("allow_sudo") %}<span class="badge bad">enabled</span>{% else %}<span class="badge">off</span>{% endif %}{% endif %}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="muted">No resources. Add SSH hosts with <code>uv run agw-onboard-ssh</code>.</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

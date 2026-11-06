@@ -1,0 +1,141 @@
+/* Agent Gateway admin UI. No third-party CSS; light and dark via prefers-color-scheme. */
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --text: #1c2430;
+  --muted: #5b6676;
+  --border: #dde2e8;
+  --accent: #2563eb;
+  --accent-text: #ffffff;
+  --ok: #157f3b;
+  --ok-bg: #e6f5ec;
+  --warn: #9a5b00;
+  --warn-bg: #fff4dc;
+  --bad: #b42318;
+  --bad-bg: #fdeceb;
+  --code-bg: #f1f3f6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f141b;
+    --panel: #171e27;
+    --text: #e4e9ef;
+    --muted: #9aa6b4;
+    --border: #2a3441;
+    --accent: #5b8cff;
+    --accent-text: #0f141b;
+    --ok: #5fd08b;
+    --ok-bg: #12301f;
+    --warn: #f0b24a;
+    --warn-bg: #33270f;
+    --bad: #ff7b72;
+    --bad-bg: #3a1714;
+    --code-bg: #0c1117;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 10px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+header .brand { font-weight: 700; margin-right: 8px; }
+header nav { display: flex; gap: 4px; flex-wrap: wrap; flex: 1; }
+header nav a { padding: 4px 10px; border-radius: 6px; color: var(--text); }
+header nav a.active { background: var(--accent); color: var(--accent-text); }
+header form { margin: 0; }
+main { max-width: 1200px; margin: 0 auto; padding: 20px; }
+h1 { font-size: 20px; margin: 0 0 16px; }
+h2 { font-size: 16px; margin: 24px 0 8px; }
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.stat { font-size: 28px; font-weight: 700; }
+.muted { color: var(--muted); }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; }
+.table-wrap { overflow-x: auto; }
+code, pre { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 13px; }
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  overflow: auto;
+  max-height: 480px;
+  margin: 4px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.command { border-left: 4px solid var(--bad); }
+.badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+}
+.badge.ok { background: var(--ok-bg); color: var(--ok); border-color: transparent; }
+.badge.warn { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
+.badge.bad { background: var(--bad-bg); color: var(--bad); border-color: transparent; }
+.flash { padding: 10px 14px; border-radius: 6px; margin-bottom: 12px; }
+.flash.ok { background: var(--ok-bg); color: var(--ok); }
+.flash.error { background: var(--bad-bg); color: var(--bad); }
+form.inline { display: inline-flex; gap: 6px; align-items: center; margin: 2px 0; flex-wrap: wrap; }
+.stack { display: grid; gap: 10px; max-width: 640px; }
+label { display: grid; gap: 4px; font-weight: 600; }
+label span { font-weight: 400; color: var(--muted); font-size: 12px; }
+input[type=text], input[type=password], select, textarea {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  min-width: 0;
+}
+textarea { min-height: 90px; font-family: ui-monospace, Consolas, monospace; }
+button {
+  font: inherit;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+button.primary { background: var(--accent); color: var(--accent-text); border-color: transparent; }
+button.danger { background: var(--bad); color: #fff; border-color: transparent; }
+.login { max-width: 420px; margin: 10vh auto; }
+.token {
+  font-family: ui-monospace, Consolas, monospace;
+  word-break: break-all;
+  padding: 10px;
+  background: var(--warn-bg);
+  border-radius: 6px;
+}
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
+dt { color: var(--muted); }
+dd { margin: 0; }
+footer { text-align: center; color: var(--muted); font-size: 12px; padding: 20px; }

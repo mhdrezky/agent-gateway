@@ -2,7 +2,7 @@
 
 from collections.abc import Iterable
 
-from agent_gateway.modules.action_registry.models import RiskLevel
+from agent_gateway.modules.action_registry.models import ActionDefinition, RiskLevel
 from agent_gateway.modules.authorization.models import (
     ApprovalMode,
     AuthorizationRequest,
@@ -39,6 +39,13 @@ def any_pattern_matches(patterns: Iterable[str], action_id: str) -> bool:
     return any(pattern_matches(p, action_id) for p in patterns)
 
 
+def grants(patterns: Iterable[str], action: ActionDefinition) -> bool:
+    """Whether ``patterns`` cover ``action``. Privileged actions need their exact id."""
+    if action.privileged:
+        return action.id in patterns
+    return any_pattern_matches(patterns, action.id)
+
+
 def selector_matches(selector: ResourceSelector, resource: Resource) -> bool:
     """Match by id, or by tags when the selector names at least one tag.
 
@@ -71,7 +78,7 @@ class DefaultPolicyEngine:
         principal, action, resource = request.principal, request.action, request.resource
 
         granted = (role for role in request.roles if role.id in principal.roles)
-        if not any(any_pattern_matches(role.actions, action.id) for role in granted):
+        if not any(grants(role.actions, action) for role in granted):
             return Decision.deny(REASON_NOT_IN_ROLES)
 
         if resource.type != action.resource_type:
@@ -82,7 +89,7 @@ class DefaultPolicyEngine:
             for policy in request.policies
             if (policy.expires_at is None or policy.expires_at > request.now)
             and _subject_matches(policy, principal)
-            and any_pattern_matches(policy.actions, action.id)
+            and grants(policy.actions, action)
             and selector_matches(policy.resources, resource)
         ]
 

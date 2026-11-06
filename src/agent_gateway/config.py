@@ -23,10 +23,17 @@ class _Section(BaseModel):
 class ServerSettings(_Section):
     host: str = "127.0.0.1"
     port: int = Field(default=8080, ge=1, le=65535)
+    # Host names (host[:port], "*" for any port) besides localhost that /mcp accepts in the
+    # Host header, e.g. "gateway.example.com". Guards against DNS rebinding.
+    public_hosts: list[str] = Field(default_factory=list)
 
 
 class ApprovalSettings(_Section):
     ttl_minutes: int = Field(default=15, ge=1, le=1440)
+    # Approving a privileged action (ssh.sudo) opens a window of this many minutes in which
+    # the same agent may run that action on the same resource without asking again.
+    # 0 turns windows off: every privileged command then needs its own approval.
+    elevation_minutes: int = Field(default=15, ge=0, le=240)
 
 
 class ExecutionSettings(_Section):

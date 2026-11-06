@@ -29,9 +29,10 @@ from agent_gateway.modules.approvals.models import Approval, ApprovalStatus
 from agent_gateway.modules.approvals.ports import ApprovalService
 from agent_gateway.modules.audit.models import Actor, ActorType, AuditEventType, AuditRecord
 from agent_gateway.modules.audit.ports import AuditLog
-from agent_gateway.modules.authorization.engine import any_pattern_matches, selector_matches
+from agent_gateway.modules.authorization.engine import grants, selector_matches
 from agent_gateway.modules.authorization.models import (
     AuthorizationRequest,
+    Decision,
     Policy,
     PolicyEffect,
     Role,
@@ -39,6 +40,7 @@ from agent_gateway.modules.authorization.models import (
 from agent_gateway.modules.authorization.ports import PolicyEngine
 from agent_gateway.modules.credentials.models import SecretPayload
 from agent_gateway.modules.credentials.ports import CredentialStore
+from agent_gateway.modules.elevation.service import ElevationService
 from agent_gateway.modules.execution.models import Execution, ExecutionRequest, ExecutionStatus
 from agent_gateway.modules.execution.ports import ExecutionStore
 from agent_gateway.modules.execution.redact import redact
@@ -71,6 +73,8 @@ class GatewayExecutionEngine:
         audit: AuditLog,
         clock: Clock,
         settings: ExecutionSettings,
+        elevations: ElevationService | None = None,
+        elevation_minutes: int = 0,
         logger: logging.Logger | None = None,
     ) -> None:
         self._executions = executions
@@ -84,6 +88,8 @@ class GatewayExecutionEngine:
         self._audit = audit
         self._clock = clock
         self._settings = settings
+        self._elevations = elevations
+        self._elevation_minutes = elevation_minutes
         self._log = logger or logging.getLogger("agent_gateway.execution")
         self._global_slots = asyncio.Semaphore(settings.max_concurrent)
         self._resource_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -126,6 +132,7 @@ class GatewayExecutionEngine:
                 now=self._clock.now(),
             )
         )
+        decision = await self._apply_elevation(decision, registered, agent_id, resource.id)
         execution = Execution(
             id=new_id(IdPrefix.EXECUTION),
             agent_id=agent_id,
@@ -187,7 +194,7 @@ class GatewayExecutionEngine:
         return [
             action
             for action in self._registry.all()
-            if any(any_pattern_matches(r.actions, action.definition.id) for r in roles)
+            if any(grants(r.actions, action.definition) for r in roles)
         ]
 
     async def visible_resources(self, principal: Principal) -> list[Resource]:
@@ -247,6 +254,7 @@ class GatewayExecutionEngine:
             approved = await self._executions.update(
                 execution.id, lambda e: e.model_copy(update={"status": ExecutionStatus.APPROVED})
             )
+            await self._open_elevation(approved, approval)
             self._schedule(approved)
             return
         status = (
@@ -264,6 +272,57 @@ class GatewayExecutionEngine:
             lambda e: e.model_copy(update={"status": status, "finished_at": self._clock.now()}),
         )
         await self._record(event, closed, SYSTEM_ACTOR, {"approval_status": str(approval.status)})
+
+    async def _apply_elevation(
+        self, decision: Decision, registered: RegisteredAction, agent_id: str, resource_id: str
+    ) -> Decision:
+        """Inside an open window, a privileged action that policy allows skips approval.
+
+        A window never turns a deny into an allow, and only covers the exact agent,
+        resource, and action it was opened for.
+        """
+        definition = registered.definition
+        if (
+            self._elevations is None
+            or not definition.privileged
+            or not decision.allowed
+            or not decision.approval_required
+        ):
+            return decision
+        window = await self._elevations.active_for(agent_id, resource_id, definition.id)
+        if window is None:
+            return decision
+        return decision.model_copy(
+            update={
+                "approval_required": False,
+                "reason": f"{decision.reason}; elevated by {window.id} until "
+                f"{window.expires_at.isoformat()}",
+            }
+        )
+
+    async def _open_elevation(self, execution: Execution, approval: Approval) -> None:
+        """Approving a privileged action opens a window for the same agent and resource."""
+        registered = self._registry.get(execution.action)
+        if (
+            self._elevations is None
+            or self._elevation_minutes <= 0
+            or registered is None
+            or not registered.definition.privileged
+        ):
+            return
+        if await self._elevations.active_for(
+            execution.agent_id, execution.resource_id, execution.action
+        ):
+            return
+        decided_by = approval.decided_by or "unknown"
+        await self._elevations.grant(
+            agent_id=execution.agent_id,
+            resource_id=execution.resource_id,
+            action=execution.action,
+            minutes=self._elevation_minutes,
+            actor=Actor(type=ActorType.ADMIN, id=decided_by),
+            approval_id=approval.id,
+        )
 
     def _schedule(self, execution: Execution) -> None:
         if execution.id in self._scheduled:

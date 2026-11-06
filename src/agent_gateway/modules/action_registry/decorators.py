@@ -31,6 +31,7 @@ def action[F: Callable[..., Any]](
     description: str,
     input_model: type[BaseModel],
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+    privileged: bool = False,
 ) -> Callable[[F], F]:
     """Attach an ``ActionDefinition`` to a handler. The broker name is the id's first segment."""
     definition = ActionDefinition(
@@ -41,6 +42,7 @@ def action[F: Callable[..., Any]](
         risk=risk,
         input_model=input_model,
         timeout_seconds=timeout_seconds,
+        privileged=privileged,
     )
 
     def mark(fn: F) -> F:

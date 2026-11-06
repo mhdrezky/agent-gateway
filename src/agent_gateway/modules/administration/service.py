@@ -12,6 +12,7 @@ from agent_gateway.common.clock import Clock
 from agent_gateway.common.errors import (
     AdminRequiredError,
     AgentNotFoundError,
+    ConflictError,
     NotFoundError,
 )
 from agent_gateway.common.ids import IdPrefix, new_id
@@ -36,6 +37,8 @@ from agent_gateway.modules.authorization.models import (
 )
 from agent_gateway.modules.credentials.models import CredentialMeta, SecretPayload
 from agent_gateway.modules.credentials.ports import CredentialStore
+from agent_gateway.modules.elevation.models import Elevation
+from agent_gateway.modules.elevation.service import ElevationService
 from agent_gateway.modules.identity.models import (
     Agent,
     AgentStatus,
@@ -65,6 +68,7 @@ class AdminService:
         approvals: ApprovalService,
         audit: AuditLog,
         clock: Clock,
+        elevations: ElevationService | None = None,
     ) -> None:
         self._identity = identity
         self._resources = resources
@@ -74,6 +78,7 @@ class AdminService:
         self._approvals = approvals
         self._audit = audit
         self._clock = clock
+        self._elevations = elevations
 
     # ---- agents and tokens ----------------------------------------------------------------
 
@@ -322,6 +327,48 @@ class AdminService:
     async def verify_audit(self, actor: Principal) -> VerifyResult:
         _require_admin(actor)
         return await self._audit.verify()
+
+    # ---- elevation windows ----------------------------------------------------------------
+
+    def _elevation_service(self) -> ElevationService:
+        if self._elevations is None:
+            raise ConflictError("elevation windows are not configured")
+        return self._elevations
+
+    async def list_elevations(
+        self, actor: Principal, *, active_only: bool = True
+    ) -> list[Elevation]:
+        _require_admin(actor)
+        return await self._elevation_service().list(active_only=active_only)
+
+    async def grant_elevation(
+        self,
+        actor: Principal,
+        *,
+        agent_id: str,
+        resource_id: str,
+        action: str,
+        minutes: int,
+    ) -> Elevation:
+        """Open a window by hand, without waiting for an approval."""
+        _require_admin(actor)
+        if await self._identity.get_agent(agent_id) is None:
+            raise AgentNotFoundError(f"agent {agent_id} not found")
+        if await self._resources.get(resource_id) is None:
+            raise NotFoundError(f"resource {resource_id} not found")
+        return await self._elevation_service().grant(
+            agent_id=agent_id,
+            resource_id=resource_id,
+            action=action,
+            minutes=minutes,
+            actor=Actor(type=ActorType.ADMIN, id=actor.token_id),
+        )
+
+    async def revoke_elevation(self, actor: Principal, elevation_id: str) -> Elevation:
+        _require_admin(actor)
+        return await self._elevation_service().revoke(
+            elevation_id, Actor(type=ActorType.ADMIN, id=actor.token_id)
+        )
 
     # ---- helpers --------------------------------------------------------------------------
 

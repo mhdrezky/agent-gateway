@@ -15,7 +15,8 @@ from typing import Annotated, Any
 import typer
 from pydantic import BaseModel
 
-from agent_gateway.common.errors import GatewayError
+from agent_gateway.common.envfile import ADMIN_TOKEN_VAR, DEFAULT_ENV_FILE, save_env_var
+from agent_gateway.common.errors import GatewayError, ResourceNotFoundError
 from agent_gateway.config import Settings, load_settings
 from agent_gateway.modules.administration.service import CLI_PRINCIPAL
 from agent_gateway.modules.approvals.models import ApprovalStatus
@@ -28,8 +29,8 @@ from agent_gateway.modules.authorization.models import (
 )
 from agent_gateway.modules.credentials.models import CredentialType, SecretPayload
 from agent_gateway.modules.crypto.keyring import generate_master_key
-from agent_gateway.modules.identity.models import AgentStatus, TokenKind
-from agent_gateway.modules.resources.models import ResourceType
+from agent_gateway.modules.identity.models import AgentStatus, IssuedToken, TokenKind
+from agent_gateway.modules.resources.models import Resource, ResourceType
 from agent_gateway.runtime import Gateway, build_gateway
 
 app = typer.Typer(help="Agent Gateway admin CLI.", no_args_is_help=True)
@@ -41,6 +42,9 @@ role_app = typer.Typer(help="Manage roles.", no_args_is_help=True)
 policy_app = typer.Typer(help="Manage policies.", no_args_is_help=True)
 approvals_app = typer.Typer(help="Review pending approvals.", no_args_is_help=True)
 audit_app = typer.Typer(help="Inspect the audit log.", no_args_is_help=True)
+elevation_app = typer.Typer(
+    help="Time-boxed windows for privileged actions (ssh.sudo).", no_args_is_help=True
+)
 for sub, name in [
     (agent_app, "agent"),
     (token_app, "token"),
@@ -50,6 +54,7 @@ for sub, name in [
     (policy_app, "policy"),
     (approvals_app, "approvals"),
     (audit_app, "audit"),
+    (elevation_app, "elevation"),
 ]:
     app.add_typer(sub, name=name)
 
@@ -84,9 +89,59 @@ def _print(value: Any) -> None:
     typer.echo(json.dumps(value, indent=2))
 
 
-def _show_token_once(plaintext: str) -> None:
-    typer.secho("\nToken (shown only once, store it now):", fg=typer.colors.YELLOW, err=True)
-    typer.echo(plaintext)
+def _token_block(title: str, rows: list[tuple[str, str]]) -> None:
+    """Print a token's id and related values together, aligned, as one block."""
+    typer.secho(f"\n{title}", fg=typer.colors.YELLOW, bold=True)
+    width = max(len(label) for label, _ in rows)
+    for label, value in rows:
+        typer.echo(f"  {label:<{width}}  {value}")
+
+
+def _show_token_once(issued: IssuedToken) -> None:
+    rows = [("id", issued.token.id)]
+    if issued.token.agent_id is not None:
+        rows.append(("agent", issued.token.agent_id))
+    rows.append(("token", issued.plaintext.get_secret_value()))
+    _token_block(
+        f"{issued.token.kind.value.capitalize()} token (shown only once, store it now)", rows
+    )
+
+
+EnvFileOption = Annotated[
+    Path,
+    typer.Option(help="Where to save the admin token as AGW_ADMIN_TOKEN.", envvar="AGW_ENV_FILE"),
+]
+SaveEnvOption = Annotated[
+    bool, typer.Option("--save-env/--no-save-env", help="Save the admin token to --env-file.")
+]
+
+
+def _deliver_admin_token(issued: IssuedToken, env_file: Path, save: bool) -> None:
+    """Save the admin token to ``env_file`` and say where; print it if saving is off or fails."""
+    if save:
+        try:
+            save_env_var(
+                env_file,
+                ADMIN_TOKEN_VAR,
+                issued.plaintext.get_secret_value(),
+                comment="Agent Gateway admin token (secret)",
+            )
+        except OSError as exc:
+            typer.secho(f"Could not write {env_file}: {exc}", fg=typer.colors.RED, err=True)
+        else:
+            _token_block(
+                "Admin token",
+                [
+                    ("id", issued.token.id),
+                    ("saved", f"{env_file.resolve()} ({ADMIN_TOKEN_VAR})"),
+                ],
+            )
+            typer.echo(
+                "  Anyone who can read that file is a gateway admin: keep it private and out of "
+                "git.\n  agw-onboard-ssh reads it automatically."
+            )
+            return
+    _show_token_once(issued)
 
 
 # ---- setup ------------------------------------------------------------------------------
@@ -112,8 +167,12 @@ def keygen(
 
 
 @app.command()
-def init(config: ConfigOption = None) -> None:
-    """Create the data directory and the first admin token."""
+def init(
+    config: ConfigOption = None,
+    env_file: EnvFileOption = DEFAULT_ENV_FILE,
+    save_env: SaveEnvOption = True,
+) -> None:
+    """Create the data directory and the first admin token (saved to .env by default)."""
 
     async def go(gw: Gateway) -> None:
         gw.settings.var_dir.mkdir(parents=True, exist_ok=True)
@@ -122,8 +181,8 @@ def init(config: ConfigOption = None) -> None:
             typer.echo("Already initialised; use `agw token create --admin` for another token.")
             return
         issued = await gw.admin.issue_token(CLI_PRINCIPAL, TokenKind.ADMIN)
-        typer.echo(f"Initialised {gw.settings.var_dir}. Admin token id: {issued.token.id}")
-        _show_token_once(issued.plaintext.get_secret_value())
+        typer.echo(f"Initialised {gw.settings.var_dir}.")
+        _deliver_admin_token(issued, env_file, save_env)
 
     _run(config, go)
 
@@ -208,6 +267,11 @@ def token_create(
     admin: Annotated[bool, typer.Option("--admin", help="Create an admin token.")] = False,
     expires_days: Annotated[int | None, typer.Option(min=1)] = None,
     config: ConfigOption = None,
+    env_file: EnvFileOption = DEFAULT_ENV_FILE,
+    save_env: Annotated[
+        bool,
+        typer.Option("--save-env/--no-save-env", help="With --admin: save it to --env-file."),
+    ] = True,
 ) -> None:
     if admin == (agent is not None):
         typer.secho("Pass exactly one of --agent or --admin.", fg=typer.colors.RED, err=True)
@@ -218,8 +282,10 @@ def token_create(
         config,
         lambda gw: gw.admin.issue_token(CLI_PRINCIPAL, kind, agent_id=agent, expires_at=expires_at),
     )
-    typer.echo(f"Token id: {issued.token.id}")
-    _show_token_once(issued.plaintext.get_secret_value())
+    if admin:
+        _deliver_admin_token(issued, env_file, save_env)
+    else:
+        _show_token_once(issued)
 
 
 @token_app.command("list")
@@ -269,6 +335,30 @@ def resource_list(config: ConfigOption = None) -> None:
 def resource_delete(resource_id: str, config: ConfigOption = None) -> None:
     deleted = _run(config, lambda gw: gw.admin.delete_resource(CLI_PRINCIPAL, resource_id))
     typer.echo("deleted" if deleted else "not found")
+
+
+@resource_app.command("sudo")
+def resource_sudo(
+    resource_id: str,
+    enable: Annotated[
+        bool, typer.Option("--enable/--disable", help="Allow or stop ssh.sudo on this host.")
+    ],
+    config: ConfigOption = None,
+) -> None:
+    """Turn the privileged ssh.sudo action on or off for one SSH host. Takes effect at once."""
+
+    async def go(gw: Gateway) -> Resource:
+        resources = await gw.admin.list_resources(CLI_PRINCIPAL, type=ResourceType.SSH_HOST)
+        current = next((r for r in resources if r.id == resource_id), None)
+        if current is None:
+            raise ResourceNotFoundError(f"ssh_host resource {resource_id} not found")
+        return await gw.admin.update_resource(
+            CLI_PRINCIPAL, resource_id, attributes={**current.attributes, "allow_sudo": enable}
+        )
+
+    updated = _run(config, go)
+    state = "ENABLED" if updated.attributes.get("allow_sudo") else "disabled"
+    typer.echo(f"ssh.sudo is {state} on {updated.name} ({updated.id}).")
 
 
 def _read_secret(value_file: Path | None) -> str:
@@ -388,6 +478,42 @@ def audit_verify(config: ConfigOption = None) -> None:
     _print(result)
     if not result.ok:
         raise typer.Exit(1)
+
+
+# ---- elevation windows ------------------------------------------------------------------
+
+
+@elevation_app.command("list")
+def elevation_list(
+    all_: Annotated[bool, typer.Option("--all", help="Include expired and revoked.")] = False,
+    config: ConfigOption = None,
+) -> None:
+    _print(_run(config, lambda gw: gw.admin.list_elevations(CLI_PRINCIPAL, active_only=not all_)))
+
+
+@elevation_app.command("grant")
+def elevation_grant(
+    agent: Annotated[str, typer.Option(help="Agent id.")],
+    resource: Annotated[str, typer.Option(help="Resource id.")],
+    minutes: Annotated[int, typer.Option(min=1, max=240)] = 15,
+    action: str = "ssh.sudo",
+    config: ConfigOption = None,
+) -> None:
+    """Open a window now, without waiting for an approval."""
+    _print(
+        _run(
+            config,
+            lambda gw: gw.admin.grant_elevation(
+                CLI_PRINCIPAL, agent_id=agent, resource_id=resource, action=action, minutes=minutes
+            ),
+        )
+    )
+
+
+@elevation_app.command("revoke")
+def elevation_revoke(elevation_id: str, config: ConfigOption = None) -> None:
+    """Close a window early; the next privileged command needs approval again."""
+    _print(_run(config, lambda gw: gw.admin.revoke_elevation(CLI_PRINCIPAL, elevation_id)))
 
 
 if __name__ == "__main__":

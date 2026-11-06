@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% from "_macros.html" import status, name %}
+{% block head %}{% if not terminal %}<meta http-equiv="refresh" content="5">{% endif %}{% endblock %}
+{% block title %}{{ e.id }}{% endblock %}
+{% block content %}
+<h1><code>{{ e.id }}</code> {{ status(e.status) }}</h1>
+<div class="panel">
+  <dl>
+    <dt>Agent</dt><dd>{{ name(names, e.agent_id) }}</dd>
+    <dt>Action</dt><dd><code>{{ e.action }}</code></dd>
+    <dt>Resource</dt><dd>{{ name(names, e.resource_id) }}</dd>
+    <dt>Created</dt><dd>{{ e.created_at | ts }}</dd>
+    <dt>Started</dt><dd>{{ e.started_at | ts }}</dd>
+    <dt>Finished</dt><dd>{{ e.finished_at | ts }}</dd>
+    {% if e.decision %}<dt>Decision</dt><dd>{{ status(e.decision.effect) }} {{ e.decision.reason }}{% if e.decision.policy_id %} · <code>{{ e.decision.policy_id }}</code>{% endif %}</dd>{% endif %}
+    {% if e.approval_id %}<dt>Approval</dt><dd><code>{{ e.approval_id }}</code></dd>{% endif %}
+    {% if e.idempotency_key %}<dt>Idempotency key</dt><dd><code>{{ e.idempotency_key }}</code></dd>{% endif %}
+    <dt>Params digest</dt><dd><code>{{ e.params_digest }}</code></dd>
+    {% if e.error %}<dt>Error</dt><dd>{{ e.error }}</dd>{% endif %}
+  </dl>
+</div>
+<h2>Params</h2>
+{% if e.params.command is defined %}<pre class="command">{{ e.params.command }}</pre>{% else %}<pre>{{ e.params | pretty }}</pre>{% endif %}
+{% if e.result %}
+<h2>Result {{ status("succeeded" if e.result.ok else "failed") }}{% if e.result.truncated %} <span class="badge warn">truncated</span>{% endif %}</h2>
+{% set data = e.result.data %}
+{% if data.stdout is defined %}
+<div class="muted">exit code {{ data.exit_code }}</div>
+<h2>stdout</h2><pre>{{ data.stdout }}</pre>
+{% if data.stderr %}<h2>stderr</h2><pre>{{ data.stderr }}</pre>{% endif %}
+{% else %}
+<pre>{{ data | pretty }}</pre>
+{% endif %}
+{% endif %}
+{% if not terminal %}<p class="muted">This page refreshes every 5 seconds until the execution finishes.</p>{% endif %}
+{% endblock %}

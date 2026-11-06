@@ -50,3 +50,13 @@ def logs_tail_command(service: str, lines: int, attrs: SshHostAttributes) -> str
         raise BrokerError(f"lines must be between 1 and {MAX_LOG_LINES}")
     argv = ["journalctl", "--no-pager", "-o", "short-iso", "-u", unit, "-n", str(lines)]
     return shlex.join(_privileged(argv, attrs))
+
+
+def sudo_command(command: str, attrs: SshHostAttributes) -> str:
+    """Wrap an arbitrary command for ``ssh.sudo``; refuses unless the host opted in."""
+    if not attrs.allow_sudo:
+        raise BrokerError("ssh.sudo is not enabled for this host (allow_sudo is off)")
+    if chr(0) in command:
+        raise BrokerError("command must not contain NUL bytes")
+    # "-n": fail instead of prompting when the user has no passwordless sudo.
+    return shlex.join(["sudo", "-n", "--", "bash", "-lc", command])

@@ -30,6 +30,8 @@ from agent_gateway.modules.credentials.store import EncryptedCredentialStore
 from agent_gateway.modules.crypto.envelope import AesGcmEnvelopeCipher
 from agent_gateway.modules.crypto.keyring import MasterKeyRing
 from agent_gateway.modules.crypto.ports import KeyRing
+from agent_gateway.modules.elevation.models import Elevation
+from agent_gateway.modules.elevation.service import ElevationService
 from agent_gateway.modules.execution.engine import GatewayExecutionEngine
 from agent_gateway.modules.execution.store import FileExecutionStore
 from agent_gateway.modules.identity.authenticator import TokenAuthenticator
@@ -119,6 +121,7 @@ def build_gateway(
         var / "credentials.json", CredentialMeta, locker=locker, clock=clock
     )
     approvals_data = JsonCollection(var / "approvals.json", Approval, locker=locker, clock=clock)
+    elevations_data = JsonCollection(var / "elevations.json", Elevation, locker=locker, clock=clock)
 
     resources_data = JsonCollection(var / "resources.json", Resource, locker=locker, clock=clock)
 
@@ -140,6 +143,7 @@ def build_gateway(
         clock=clock,
     )
     approvals = ApprovalWorkflow(approvals_data, audit, clock, settings.approvals)
+    elevations = ElevationService(elevations_data, audit, clock)
     engine = GatewayExecutionEngine(
         executions=FileExecutionStore(var / "executions", locker=locker),
         registry=registry,
@@ -152,6 +156,8 @@ def build_gateway(
         audit=audit,
         clock=clock,
         settings=settings.execution,
+        elevations=elevations,
+        elevation_minutes=settings.approvals.elevation_minutes,
     )
     admin = AdminService(
         identity=identity,
@@ -162,6 +168,7 @@ def build_gateway(
         approvals=approvals,
         audit=audit,
         clock=clock,
+        elevations=elevations,
     )
     return Gateway(
         settings=settings,
@@ -174,6 +181,7 @@ def build_gateway(
             credential_meta,
             approvals_data,
             resources_data,
+            elevations_data,
         ],
         registry=registry,
         audit=audit,

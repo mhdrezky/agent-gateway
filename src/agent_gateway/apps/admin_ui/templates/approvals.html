@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% from "_macros.html" import csrf_field, status, name with context %}
+{% block head %}{% if auto %}<meta http-equiv="refresh" content="10">{% endif %}{% endblock %}
+{% block title %}Approvals{% endblock %}
+{% block content %}
+<h1>Approvals</h1>
+<p>
+  {% for s in statuses %}
+  <a href="/admin/approvals?status={{ s }}" class="badge {{ 'warn' if s == shown else '' }}">{{ s }}</a>
+  {% endfor %}
+  ·
+  {% if auto %}<a href="/admin/approvals?status={{ shown }}">Stop auto-refresh</a>
+  {% else %}<a href="/admin/approvals?status={{ shown }}&auto=1">Auto-refresh every 10 s</a>{% endif %}
+</p>
+{% if windows %}
+<h2>Open sudo windows</h2>
+<div class="panel table-wrap">
+  <p class="muted">Inside a window the agent runs this privileged action on this resource without asking again. Role, policy, <code>allow_sudo</code>, and the server's sudoers still apply.</p>
+  <table>
+    <tr><th>Agent</th><th>Resource</th><th>Action</th><th>Opened</th><th>Ends</th><th></th></tr>
+    {% for w in windows %}
+    <tr>
+      <td>{{ name(names, w.agent_id) }}</td>
+      <td>{{ name(names, w.resource_id) }}</td>
+      <td><code>{{ w.action }}</code></td>
+      <td>{{ w.granted_at | ts }}<br><span class="muted">{{ w.granted_by }}</span></td>
+      <td>{{ w.expires_at | ts }}<br><span class="badge warn">{{ w.expires_at | minutes_left(now) }} min left</span></td>
+      <td>
+        <form method="post" action="/admin/elevations/{{ w.id }}/revoke" class="inline">
+          {{ csrf_field() }}
+          <button type="submit" class="danger">End now</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+{% for approval, e in rows %}
+<div class="panel">
+  <dl>
+    <dt>Approval</dt><dd><code>{{ approval.id }}</code> {{ status(approval.status) }}</dd>
+    <dt>Requested</dt><dd>{{ approval.requested_at | ts }} · expires {{ approval.expires_at | ts }}</dd>
+    {% if e %}
+    <dt>Agent</dt><dd>{{ name(names, e.agent_id) }}</dd>
+    <dt>Action</dt><dd><code>{{ e.action }}</code></dd>
+    <dt>Resource</dt><dd>{{ name(names, e.resource_id) }}</dd>
+    <dt>Execution</dt><dd><a href="/admin/executions/{{ e.id }}">{{ e.id }}</a> {{ status(e.status) }}</dd>
+    {% endif %}
+    {% if approval.decided_by %}
+    <dt>Decided</dt><dd>{{ approval.decided_at | ts }} by <code>{{ approval.decided_by }}</code>{% if approval.reason %}: {{ approval.reason }}{% endif %}</dd>
+    {% endif %}
+  </dl>
+  {% if e %}
+    {% if e.params.command is defined %}
+    <h2>Command (runs as root)</h2>
+    <pre class="command">{{ e.params.command }}</pre>
+    {% else %}
+    <h2>Params</h2>
+    <pre>{{ e.params | pretty }}</pre>
+    {% endif %}
+  {% endif %}
+  {% if approval.status.value == "pending" %}
+  <form method="post" action="/admin/approvals/{{ approval.id }}/approve" class="inline">
+    {{ csrf_field() }}
+    <button type="submit" class="primary">Approve</button>
+  </form>
+  <form method="post" action="/admin/approvals/{{ approval.id }}/reject" class="inline">
+    {{ csrf_field() }}
+    <input type="text" name="reason" placeholder="Reason (optional)" maxlength="500">
+    <button type="submit" class="danger">Reject</button>
+  </form>
+  {% endif %}
+</div>
+{% else %}
+<div class="panel muted">No {{ shown if shown != "all" else "" }} approvals.</div>
+{% endfor %}
+{% endblock %}

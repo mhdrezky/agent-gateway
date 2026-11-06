@@ -40,7 +40,7 @@ These are non-negotiable. Any change that violates one of them is a bug.
 
 1. **Agents never read the master key.**
 2. **Agents never receive private credentials.** Secrets are decrypted only inside a broker, only for the duration of an action.
-3. **No arbitrary shell execution.** There is no "run this command" action.
+3. **No arbitrary shell execution**, except through explicitly **privileged** actions (today only `ssh.sudo`), which wildcards never grant and which every layer (role, policy, host flag, server sudoers) can revoke on its own.
 4. **Every action must be registered** in the Action Registry with a typed input schema.
 5. **Authorization happens on the server**, never delegated to or trusted from the LLM.
 6. **REST and MCP share the same execution engine.** No interface has its own code path to a broker.
@@ -143,7 +143,7 @@ Requirements: [uv](https://docs.astral.sh/uv/) and, for deployment, Docker Deskt
 uv sync
 uv run agw keygen --out secrets/master.key       # back this file up separately
 cp config/gateway.example.yaml config/gateway.yaml
-docker compose run --rm gateway agw init         # prints the first admin token once
+docker compose run --rm -v "${PWD}:/host" gateway agw init --env-file /host/.env
 docker compose up -d
 curl http://127.0.0.1:8080/v1/health
 ```
@@ -153,13 +153,48 @@ curl http://127.0.0.1:8080/v1/health
 ```bash
 uv sync
 uv run agw keygen --out secrets/master.key
-uv run agw init
+uv run agw init                                   # saves the admin token to .env
 uv run agw serve
 ```
 
+`agw init` saves the first admin token to `.env` as `AGW_ADMIN_TOKEN` and says where; `agw token create --admin` does the same for a new one. `.env` is gitignored (see `.env.example` for its format) and created owner-only: anyone who can read it is a gateway admin. Use `--no-save-env` to print the token instead.
+
 Without a `config/gateway.yaml`, the gateway uses `var/` for data, `secrets/master.key` for the key, and listens on `127.0.0.1:8080`.
 
-### Give an agent access
+### Admin web UI
+
+Open `http://127.0.0.1:8080/admin` and log in with an admin token (the one in `.env`). The token is exchanged for an HttpOnly, SameSite=Strict session cookie (8 hours) and is never stored in the browser; revoking that admin token ends the session at once.
+
+| Page | What you can do |
+| ---- | --------------- |
+| Dashboard | Pending approvals, counts, recent executions |
+| Approvals | Review each request with its agent, resource, and full params (root commands highlighted); approve or reject with a reason; optional auto-refresh |
+| Executions | Filter by agent, open any execution for its params, stdout/stderr, and decision |
+| Agents / Tokens | Create agents, set roles, disable/enable, issue tokens (shown once with a ready `.mcp.json`), revoke tokens, new admin token |
+| Resources | Toggle `ssh.sudo`, edit allowed services and tags, delete |
+| Roles / Policies | Edit role actions, create and delete policies; registered actions listed with risk and privileged flag |
+| Credentials | Store, rotate, delete secrets (write-only, never displayed) |
+| Audit | Browse and filter entries, verify the hash chain |
+
+The UI is plain server-rendered HTML: no JavaScript, no third-party assets, a strict Content-Security-Policy, CSRF tokens on every form, and every change goes through the same audited admin service as the CLI. Like the API, it listens on `127.0.0.1` only; put it behind HTTPS before exposing it.
+
+### Scripts
+
+| Command | What it does |
+| ------- | ------------ |
+| `agw` | Admin CLI on the gateway's data directory (`keygen`, `init`, `serve`, `agent`, `token`, `resource`, `credential`, `role`, `policy`, `approvals`, `audit`) |
+| `agw-onboard-ssh` | Interactive onboarding of an SSH host over the admin API: SSH key, host key check, authorized_keys check, names, registration, and a test run |
+| `agw-mcp` | Optional stdio MCP bridge for clients that cannot use HTTP MCP; needs `AGW_URL` and `AGW_TOKEN`. Most agents should use the built-in `/mcp` endpoint instead |
+
+### Onboard an SSH host (recommended)
+
+```bash
+uv run agw-onboard-ssh
+```
+
+It asks for the admin token, the host, port, and SSH user, reuses `secrets/vps-deploy` (or creates it), shows the host key fingerprint for you to confirm, prints the commands to create a dedicated SSH user (default `agent-gateway`, no password, optional `systemd-journal`/`docker` groups) or to install the key for an existing user, waits while you run them, logs in to verify, then creates `<name>-server`, `<name>-key`, `<name>-operator`, and `<name>-agent`, runs `ssh.system.info` as the new agent, and prints the agent token once with a ready `.mcp.json`. It reads the admin token from `--admin-token`, `AGW_ADMIN_TOKEN`, or `.env`; if it has to ask, it offers to save the token to `.env` for next time.
+
+### Give an agent access (manual)
 
 ```bash
 uv run agw role set operator -a ssh.service.status -a ssh.service.restart
@@ -171,19 +206,40 @@ uv run agw policy add -a "ssh.service.*" --role operator --tag env:prod
 uv run agw token create --agent <agent_id>         # prints the agent token once
 ```
 
-Then point the agent at the REST API, or add the MCP server to its client config:
+### Privileged access: `ssh.sudo`
+
+`ssh.sudo` runs any command as root on an SSH host (`sudo -n -- bash -lc <command>`), for agents that install and configure servers (Docker, Caddy, packages). It is off by default and needs all of these, each revocable on its own:
+
+| Layer | Grant | Revoke (takes effect immediately) |
+| ----- | ----- | --------------------------------- |
+| Role | `agw role set web01-operator -a "ssh.*" -a ssh.sudo` | `agw role set web01-operator -a "ssh.*"` |
+| Policy | `agw policy add -a ssh.sudo --role web01-operator --resource <res_id>` | `agw policy delete <pol_id>` |
+| Host flag | `agw resource sudo <res_id> --enable` | `agw resource sudo <res_id> --disable` |
+| Server | `/etc/sudoers.d/agent-gateway` with `NOPASSWD:ALL` (onboarding prints the commands) | `sudo rm -f /etc/sudoers.d/agent-gateway` |
+
+`ssh.*` never includes `ssh.sudo`: it must be named exactly. It is high risk, so with the default `by_risk` policy the first command waits for approval.
+
+**Sudo windows.** Approving an `ssh.sudo` command opens a 15-minute window (`approvals.elevation_minutes`, 0 turns it off) in which the same agent may run any `ssh.sudo` command on the same resource without asking again. After 15 minutes the next command needs approval again, which opens a new window. A window never overrides the other layers: role, policy, host flag, and sudoers still apply. Close one early in the UI (Approvals or the resource page, "End now") or with `agw elevation revoke <elv_id>`; open one by hand with `agw elevation grant --agent <agt_id> --resource <res_id> --minutes 15`. Openings and closings are audited (`elevation.granted`, `elevation.revoked`).
+
+### Connect an agent over MCP
+
+The gateway serves MCP (Streamable HTTP) at `/mcp`. An agent needs only the URL and its own agent token, no copy of this repo. Put the token in the `AGW_TOKEN` environment variable and add this to the agent project's `.mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "agent-gateway": {
-      "command": "uv",
-      "args": ["--directory", "/path/to/agent-gateway", "run", "agw-mcp"],
-      "env": { "AGW_URL": "http://127.0.0.1:8080", "AGW_TOKEN": "agw_tok_..." }
+      "type": "http",
+      "url": "http://127.0.0.1:8080/mcp",
+      "headers": { "Authorization": "Bearer ${AGW_TOKEN}" }
     }
   }
 }
 ```
+
+Every `/mcp` request is authenticated with that header; requests without a valid agent token get `401`, admin tokens get `403`, and each tool call runs as the agent that sent it, through the same engine as the REST API. `/mcp` accepts only `localhost` Host headers unless you list public names in `server.public_hosts`; expose it beyond this machine only behind HTTPS.
+
+Clients that only speak stdio can use the bridge instead: `"command": "uv", "args": ["--directory", "/path/to/agent-gateway", "run", "agw-mcp"]` with `AGW_URL` and `AGW_TOKEN` in `env`.
 
 Actions that need approval return `pending_approval`. Review them with:
 

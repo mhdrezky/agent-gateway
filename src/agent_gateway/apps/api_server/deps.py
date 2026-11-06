@@ -50,20 +50,31 @@ def get_gateway(request: Request) -> Gateway:
 GatewayDep = Annotated[Gateway, Depends(get_gateway)]
 
 
-async def current_principal(
-    request: Request,
-    gateway: GatewayDep,
-    authorization: Annotated[str | None, Header()] = None,
+def bearer_token(authorization: str | None) -> str:
+    """The token from an ``Authorization: Bearer ...`` header; raises 401 otherwise."""
+    scheme, _, raw = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not raw.strip():
+        raise AuthenticationError(AUTH_FAILED_MESSAGE)
+    return raw.strip()
+
+
+async def authenticate_request(
+    request: Request, gateway: Gateway, limiter: FailureLimiter, token: str | None = None
 ) -> Principal:
-    limiter: FailureLimiter = request.app.state.limiter
+    """Rate-limited authentication with failures audited. Used by REST, ``/mcp``, and the
+    admin UI login. ``token`` defaults to the request's ``Authorization: Bearer`` header.
+    """
     client = request.client.host if request.client else "unknown"
     limiter.check(client)
-
-    scheme, _, raw = (authorization or "").partition(" ")
     try:
-        if scheme.lower() != "bearer" or not raw:
+        raw = (
+            token.strip()
+            if token is not None
+            else bearer_token(request.headers.get("authorization"))
+        )
+        if not raw:
             raise AuthenticationError(AUTH_FAILED_MESSAGE)
-        return await gateway.authenticator.authenticate(raw.strip())
+        return await gateway.authenticator.authenticate(raw)
     except AuthenticationError:
         limiter.record(client)
         # Auditing a failure must never turn a 401 into a 503.
@@ -76,6 +87,15 @@ async def current_principal(
                 )
             )
         raise
+
+
+async def current_principal(
+    request: Request,
+    gateway: GatewayDep,
+    # Declared so the header shows up in the OpenAPI schema; read via the request.
+    authorization: Annotated[str | None, Header()] = None,
+) -> Principal:
+    return await authenticate_request(request, gateway, request.app.state.limiter)
 
 
 PrincipalDep = Annotated[Principal, Depends(current_principal)]

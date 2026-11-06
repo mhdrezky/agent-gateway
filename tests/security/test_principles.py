@@ -10,6 +10,7 @@ import json
 import pytest
 
 from agent_gateway.config import BrokerSettings, DockerBrokerSettings, Settings
+from agent_gateway.modules.action_registry.models import RiskLevel
 from agent_gateway.modules.action_registry.registry import InMemoryActionRegistry
 from agent_gateway.runtime import default_brokers
 from tests.world import SECRET, World
@@ -87,17 +88,25 @@ async def test_p2_credential_files_are_encrypted(world: World) -> None:
     assert SECRET not in meta
 
 
-def test_p3_no_registered_action_accepts_a_command() -> None:
+def test_p3_only_privileged_actions_accept_a_command() -> None:
+    """P3 (revised): arbitrary commands exist only as explicitly privileged actions."""
     settings = Settings(brokers=BrokerSettings(docker=DockerBrokerSettings(enabled=True)))
     registry = InMemoryActionRegistry()
     for broker in default_brokers(settings):
         broker.register(registry)
     assert registry.all()
+    privileged = []
     for action in registry.all():
-        fields = set(action.definition.input_model.model_fields)
-        assert not fields & SHELL_FIELD_NAMES, action.definition.id
-        for word in ("exec", "shell", "run_command"):
-            assert word not in action.definition.id
+        definition = action.definition
+        fields = set(definition.input_model.model_fields)
+        if definition.privileged:
+            privileged.append(definition.id)
+            assert definition.risk in (RiskLevel.HIGH, RiskLevel.CRITICAL), definition.id
+            continue
+        assert not fields & SHELL_FIELD_NAMES, definition.id
+        for word in ("exec", "shell", "run_command", "sudo"):
+            assert word not in definition.id
+    assert privileged == ["ssh.sudo"]
 
 
 async def test_p4_unregistered_action_never_reaches_a_broker(world: World) -> None:

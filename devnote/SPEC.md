@@ -41,7 +41,7 @@ Agent Gateway adalah gateway self-hosted yang menjadi satu-satunya jalur bagi AI
 | - | ------- | --------------- |
 | P1 | Agent tidak pernah membaca master key. | Master key hanya ada di memori proses gateway; tidak ada endpoint/tool yang mengembalikannya. |
 | P2 | Agent tidak pernah menerima private credential. | Credential hanya didekripsi di dalam broker; output broker disanitasi. Endpoint credential bersifat write-only. |
-| P3 | Tidak ada arbitrary shell execution. | Tidak ada action bertipe "run command". SSH broker hanya menjalankan template perintah tetap dengan parameter tervalidasi. |
+| P3 | Tidak ada arbitrary shell execution, kecuali lewat action **privileged** yang dibuka secara sadar. | Action biasa hanya menjalankan template perintah tetap dengan parameter tervalidasi. Pengecualian (revisi 2026-11-01): `ssh.sudo` (`privileged=True`, risk minimal `high`). Action privileged tidak pernah tercakup wildcard (`ssh.*`); role dan policy harus menyebut id-nya persis, resource harus `allow_sudo: true`, dan server harus memberi sudo ke user gateway. Setiap lapisan bisa dicabut kapan saja secara terpisah. |
 | P4 | Semua action harus terdaftar. | Execution engine menolak action id yang tidak ada di registry. |
 | P5 | Authorization dilakukan di server. | Keputusan dibuat oleh policy engine; input dari LLM hanya dianggap sebagai permintaan. |
 | P6 | MCP dan REST memakai execution engine yang sama. | MCP server adalah thin client ke REST API; tidak punya jalur sendiri ke broker. |
@@ -581,12 +581,27 @@ Aturan broker:
 
 ### 11.3 Action awal (Fase 1, jalur B)
 
+#### Action privileged dan cara mencabutnya
+
+`ssh.sudo` memberi agent akses root penuh, jadi izinnya berlapis dan setiap lapisan bisa ditarik sendiri:
+
+| Lapisan | Memberi | Mencabut (berlaku seketika) |
+| ------- | ------- | --------------------------- |
+| Role | `agw role set <role> -a "ssh.*" -a ssh.sudo` | `agw role set <role> -a "ssh.*"` |
+| Policy | `agw policy add -a ssh.sudo --role <role> --resource <res_id>` | `agw policy delete <pol_id>` |
+| Resource | `agw resource sudo <res_id> --enable` | `agw resource sudo <res_id> --disable` |
+| Agent | – | `agw agent disable <agt_id>` atau `agw token revoke <tok_id>` |
+| Server | file `/etc/sudoers.d/<user>` berisi `NOPASSWD:ALL` | `sudo rm -f /etc/sudoers.d/<user>` |
+
+Dengan policy `by_risk` (default), setiap `ssh.sudo` menunggu approval karena risk-nya `high`. Policy `approval: never` menghilangkan approval; itu keputusan admin yang eksplisit. Perintah lengkap tersimpan di execution (bisa dilihat admin); audit log hanya menyimpan digest-nya.
+
 | Action id | Broker | Risk | Keterangan |
 | --------- | ------ | ---- | ---------- |
 | `ssh.system.info` | ssh | low | uptime, disk, memory |
 | `ssh.service.status` | ssh | low | `systemctl status <service>` |
 | `ssh.service.restart` | ssh | medium | `systemctl restart <service>` |
 | `ssh.logs.tail` | ssh | low | `journalctl -u <service> -n <lines>` (lines ≤ 500) |
+| `ssh.sudo` | ssh | high, **privileged** | `sudo -n -- bash -lc <command>`; hanya jika `allow_sudo: true` di resource dan id disebut persis di role + policy; timeout 600 detik |
 | `docker.container.list` | docker | low | daftar container |
 | `docker.container.logs` | docker | low | log container (tail ≤ 500) |
 | `docker.container.restart` | docker | medium | restart container dalam allowlist |
@@ -644,6 +659,17 @@ Detail implementasi (Fase 2, `modules/execution/engine.py`):
 - Kanal approval di v1: **hanya** admin REST API dan CLI (`agw approvals list|approve|reject`). Keputusan 2026-10-31: tidak ada kanal notifikasi di v1. Kandidat untuk Fase 3: Telegram bot dengan long polling (tanpa port terbuka), allowlist `chat_id`, callback ber-HMAC, dan action `critical` tetap hanya lewat CLI.
 - Agent mengetahui hasilnya dengan polling `GET /v1/executions/{id}` (atau tool MCP `get_execution`).
 - Expiry diperiksa oleh background task tiap 30 detik dan saat approval diakses.
+
+## 13a. Jendela sudo (elevation)
+
+Ditambahkan 2026-11-01 (`modules/elevation/`). Tujuannya: satu approval untuk satu sesi kerja, bukan satu approval per perintah.
+
+- Saat admin meng-approve action **privileged** (`ssh.sudo`), engine membuka **elevation** untuk pasangan (agent, resource, action) selama `approvals.elevation_minutes` (default 15, `0` = mati, maks 240).
+- Selama jendela aktif, keputusan policy `allow` + `approval_required` untuk action privileged itu diubah menjadi tanpa approval; `reason` execution memuat `elevated by elv_... until ...`.
+- Jendela **tidak pernah** mengubah deny menjadi allow: role, policy, `allow_sudo` di resource, dan sudoers server tetap berlaku dan tetap bisa mencabut akses seketika.
+- Jendela hanya berlaku untuk agent, resource, dan action yang sama persis.
+- Admin bisa menutup jendela lebih awal (UI: Approvals/Resource → "End now"; CLI: `agw elevation revoke`) atau membuka jendela manual (`agw elevation grant`, atau form di halaman resource).
+- Disimpan di `var/elevations.json` (id `elv_<ULID>`). Pembukaan dan penutupan dicatat di audit (`elevation.granted`, `elevation.revoked`) sebelum disimpan (fail closed).
 
 ## 14. Audit log
 
@@ -785,19 +811,56 @@ OpenAPI di-generate otomatis oleh FastAPI dan diekspor ke `devnote/openapi.json`
 
 Deskripsi `execute_action` menjelaskan bahwa respons dapat berstatus `pending_approval` dan agent harus memanggil `get_execution` untuk mengecek hasil, bukan mengulang submit.
 
-Contoh konfigurasi client:
+### Endpoint `/mcp` (Streamable HTTP, utama)
+
+Sejak 2026-11-01 gateway melayani MCP langsung di `/mcp` (`apps/api_server/mcp_http.py`), sehingga agent cukup punya URL dan token agent, tanpa repo atau program lokal:
+
+```json
+{
+  "mcpServers": {
+    "agent-gateway": {
+      "type": "http",
+      "url": "http://127.0.0.1:8080/mcp",
+      "headers": { "Authorization": "Bearer ${AGW_TOKEN}" }
+    }
+  }
+}
+```
+
+- Setiap request HTTP ke `/mcp` diautentikasi (rate limit + audit `auth.failed`, sama seperti REST) sebelum sampai ke lapisan MCP. Tanpa token valid → `401`; token admin → `403`.
+- Setiap tool call mengautentikasi ulang token dari header request-nya sendiri, jadi tool selalu berjalan sebagai agent pengirim. Tidak ada token yang disimpan di proses.
+- Tool memanggil `ExecutionEngine` dan view yang sama dengan REST (`apps/api_server/views.py`), jadi P6 tetap terjaga.
+- Mode stateless + JSON response: tidak ada sesi MCP yang disimpan di memori server.
+- Proteksi DNS rebinding: hanya Host `127.0.0.1`, `localhost`, `[::1]`, plus `server.public_hosts` di config.
+- Diuji di container nyata ke `tybozen-server`: `ssh.system.info` lewat `/mcp` berhasil.
+
+### Bridge stdio (`agw-mcp`, opsional)
+
+Untuk client yang hanya mendukung stdio:
 
 ```json
 {
   "mcpServers": {
     "agent-gateway": {
       "command": "uv",
-      "args": ["run", "agw-mcp"],
+      "args": ["--directory", "/path/to/agent-gateway", "run", "agw-mcp"],
       "env": { "AGW_URL": "http://127.0.0.1:8080", "AGW_TOKEN": "agw_tok_..." }
     }
   }
 }
 ```
+
+## 16a. Admin web UI (`/admin`)
+
+Ditambahkan 2026-11-01 (`apps/admin_ui/`). Halaman HTML yang dirender server oleh FastAPI + Jinja2, di app yang sama dengan REST dan `/mcp`.
+
+- **Login:** token admin ditempel sekali di `/admin/login`, diverifikasi dengan rate limit + audit `auth.failed` yang sama seperti REST, lalu ditukar dengan cookie sesi acak (`HttpOnly`, `SameSite=Strict`, `Path=/admin`, `Secure` di HTTPS, TTL 8 jam). Token agent ditolak. Token tidak pernah disimpan di browser.
+- **Sesi:** disimpan di memori proses (satu worker), maksimal 100. Setiap request mengecek ulang bahwa token admin di balik sesi masih aktif; revoke token → sesi langsung berakhir. Restart gateway → login ulang.
+- **CSRF:** setiap form POST membawa token CSRF per sesi (`secrets.compare_digest`). Test memastikan setiap form di setiap halaman membawa token yang benar.
+- **Tanpa JavaScript dan tanpa aset pihak ketiga:** CSS sendiri di `static/admin.css`. Header: `Content-Security-Policy: default-src 'none'; style-src 'self'; ...` (tidak ada `script-src` sama sekali), `X-Frame-Options: DENY`, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`.
+- **Semua perubahan lewat `AdminService`**, jadi tercatat di audit dengan actor = token admin sesi tersebut, sama seperti CLI dan REST admin.
+- **Halaman:** Dashboard, Approvals (detail params + perintah root disorot, approve/reject), Executions (+ detail stdout/stderr), Agents, Tokens (token baru tampil sekali, tidak pernah lewat redirect), Resources (toggle `ssh.sudo`, allowed services, tags, hapus dengan konfirmasi id), Roles, Policies, Credentials (write-only), Audit (+ verify).
+- **Belum ada:** membuat resource baru dari UI (pakai `agw-onboard-ssh`), edit policy yang sudah ada (hapus lalu buat ulang).
 
 ## 17. Konfigurasi
 
@@ -947,7 +1010,10 @@ Kriteria selesai: Claude Code bisa memanggil `execute_action` via MCP ke gateway
 | `modules/administration` (operasi admin ber-audit, dipakai REST + CLI) | selesai |
 | `runtime.py` (composition root) | selesai |
 | REST API agent + admin, rate limit gagal-auth, audit `auth.failed` | selesai |
-| MCP server (`agw-mcp`, stdio) | selesai |
+| MCP server: endpoint `/mcp` di gateway (HTTP, utama) dan bridge stdio `agw-mcp` | selesai |
+| Admin web UI di `/admin` (§16a) | selesai |
+| Action privileged `ssh.sudo` dengan izin berlapis yang bisa dicabut (§1 P3, §11.3) | selesai |
+| Jendela sudo 15 menit setelah approval (§13a) | selesai |
 | CLI: `keygen`, `init`, `serve`, `agent`, `token`, `resource`, `credential`, `role`, `policy`, `approvals`, `audit verify` | selesai |
 | CLI: `backup`, `rotate-master-key` | **belum** |
 | Anchor HMAC harian audit (§14.3) | **belum** (TODO di `file_log.py`) |
@@ -955,8 +1021,9 @@ Kriteria selesai: Claude Code bisa memanggil `execute_action` via MCP ke gateway
 | Test P1–P7 + integrasi REST/MCP/CLI | selesai |
 | Uji e2e: image Docker + server OpenSSH nyata, via REST, CLI, dan MCP stdio (`tests/e2e/run_e2e.py`, 16 cek) | selesai |
 | Uji langsung dari Claude Code ke host milik sendiri | **belum** |
+| `agw-onboard-ssh`: onboarding host SSH interaktif lewat admin API (key, cek host key, cek authorized_keys, penamaan `<base>-server/-key/-operator/-agent`, registrasi, uji `ssh.system.info`) | selesai |
 
-Alur setup: `agw keygen --out secrets/master.key` di host → `docker compose run --rm gateway agw init` (mencetak token admin sekali) → `docker compose up -d`.
+Alur setup: `agw keygen --out secrets/master.key` di host → `docker compose run --rm -v "${PWD}:/host" gateway agw init --env-file /host/.env` (token admin disimpan ke `.env` sebagai `AGW_ADMIN_TOKEN`; `--no-save-env` untuk mencetaknya saja) → `docker compose up -d`.
 
 Struktur tambahan Fase 2: `src/agent_gateway/runtime.py` adalah satu-satunya tempat yang merangkai implementasi konkret; `modules/*` tidak boleh meng-import `apps`, `cli`, atau `runtime`. Fixture gateway lengkap untuk test ada di `tests/world.py`.
 

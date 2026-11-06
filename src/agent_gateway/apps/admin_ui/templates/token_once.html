@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}New token{% endblock %}
+{% block content %}
+<h1>New {{ issued.token.kind.value }} token</h1>
+<div class="panel">
+  <p><strong>Shown only once.</strong> Copy it now; it cannot be displayed again.</p>
+  <dl>
+    <dt>id</dt><dd><code>{{ issued.token.id }}</code></dd>
+    {% if issued.token.agent_id %}<dt>agent</dt><dd><code>{{ issued.token.agent_id }}</code></dd>{% endif %}
+    <dt>token</dt><dd><div class="token">{{ issued.plaintext.get_secret_value() }}</div></dd>
+  </dl>
+  {% if issued.token.kind.value == "agent" %}
+  <h2>MCP config for the agent's project (.mcp.json)</h2>
+  <p class="muted">Put the token in the agent machine's <code>AGW_TOKEN</code> environment variable.</p>
+  <pre>{
+  "mcpServers": {
+    "agent-gateway": {
+      "type": "http",
+      "url": "{{ mcp_url }}",
+      "headers": { "Authorization": "Bearer ${AGW_TOKEN}" }
+    }
+  }
+}</pre>
+  {% endif %}
+  <p><a href="/admin/tokens">Done</a></p>
+</div>
+{% endblock %}
