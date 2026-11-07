@@ -196,3 +196,4 @@ def test_phase_two_policies_still_load() -> None:
     policy = Policy.model_validate(stored)
     assert policy.subject.role == "operator"
     assert policy.subject.user is None
+    assert policy.name is None

@@ -1,0 +1,79 @@
+# Declarative onboarding for one gateway instance (SPEC §20.6).
+# Secrets are read from the environment or from a file path. They are not written here.
+# sql_database and smtp_server need that broker enabled: it registers the attribute schema.
+# agw apply does not issue tokens and does not delete objects missing from this file.
+# The agentgate dev seed (practice and production agents, staff/author/reviewer/lead)
+# lives in the agentgate repo and is applied with this same command.
+
+roles:
+  - id: staff
+    description: Query the sample database, send mail, and call the dev model.
+    actions: ["sql.*", "mail.*", "model.chat"]
+  - id: author
+    actions: ["model.chat"]
+
+agents:
+  - name: agentgate-practice
+    description: Dev assistant.
+    roles: [staff]
+
+users:
+  - group: staff
+    roles: [staff]
+  - group: author
+    roles: [author]
+
+credentials:
+  - name: sample-db
+    type: basic_auth
+    secret_env: AGW_SAMPLE_DB_PASSWORD
+  - name: mailpit
+    type: basic_auth
+    secret_env: AGW_MAILPIT_PASSWORD
+    fields:
+      username: mailer
+  - name: dev-model
+    type: api_token
+    secret_env: AGW_DEV_MODEL_KEY
+
+resources:
+  - name: sample-db
+    type: sql_database
+    tags: ["env:dev"]
+    credential: sample-db
+    attributes:
+      host: db
+      dbname: practice
+      username: agw_reader
+      allowed_tables: [notes]
+  - name: mailpit
+    type: smtp_server
+    tags: ["env:dev"]
+    credential: mailpit
+    attributes:
+      host: mailpit
+      port: 1025
+      security: none
+      from_address: dev@example.test
+      allowed_domains: [example.test]
+  - name: dev-model
+    type: model
+    tags: ["env:dev"]
+    credential: dev-model
+    attributes:
+      base_url: http://127.0.0.1:8000/v1
+      model_id: demo
+
+policies:
+  - name: staff-tools
+    subject: {user_role: staff}
+    actions: ["sql.*", "mail.*", "model.chat"]
+    resources: {names: [sample-db, mailpit, dev-model]}
+    effect: allow
+    approval: requester
+  - name: practice-agent
+    subject: {agent: agentgate-practice}
+    actions: ["sql.*", "mail.*", "model.chat"]
+    resources: {tags: ["env:dev"]}
+    effect: allow
+    approval: requester

@@ -2,6 +2,7 @@
 
 The CLI works on the same ``var/`` directory as the server, under the same file locks,
 so it can run while the server is up. Whoever can read the master key is the admin.
+``agw apply`` creates or updates the objects in a seed file (SPEC §20.6).
 """
 
 import asyncio
@@ -18,6 +19,7 @@ from pydantic import BaseModel, ValidationError
 from agent_gateway.common.envfile import ADMIN_TOKEN_VAR, DEFAULT_ENV_FILE, save_env_var
 from agent_gateway.common.errors import GatewayError, ResourceNotFoundError
 from agent_gateway.config import Settings, load_settings
+from agent_gateway.modules.administration.apply import apply_file
 from agent_gateway.modules.administration.service import CLI_PRINCIPAL
 from agent_gateway.modules.approvals.models import ApprovalStatus
 from agent_gateway.modules.authorization.models import (
@@ -187,6 +189,23 @@ def init(
         _deliver_admin_token(issued, env_file, save_env)
 
     _run(config, go)
+
+
+@app.command()
+def apply(
+    seed: Annotated[
+        Path,
+        typer.Argument(
+            help="Seed file. Secrets come from env vars or files it names, never from the file.",
+            exists=True,
+            dir_okay=False,
+            readable=True,
+        ),
+    ],
+    config: ConfigOption = None,
+) -> None:
+    """Create or update the objects a seed declares. Objects absent from the seed are kept."""
+    _print(_run(config, lambda gw: apply_file(gw.admin, CLI_PRINCIPAL, seed)))
 
 
 @app.command()

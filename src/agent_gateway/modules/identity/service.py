@@ -51,7 +51,12 @@ class IdentityManager:
         self._create_lock = asyncio.Lock()
 
     async def create_agent(
-        self, name: str, *, description: str = "", roles: Sequence[str] = ()
+        self,
+        name: str,
+        *,
+        description: str = "",
+        roles: Sequence[str] = (),
+        status: AgentStatus = AgentStatus.ACTIVE,
     ) -> Agent:
         agent = _validated(
             Agent,
@@ -60,6 +65,7 @@ class IdentityManager:
                 "name": name,
                 "description": description,
                 "roles": _unique(roles),
+                "status": status,
                 "created_at": self._clock.now(),
             },
         )

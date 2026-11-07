@@ -70,6 +70,11 @@ class ApprovalMode(StrEnum):
 
 
 class Policy(Record):
+    """An authorization rule. ``name`` is the idempotency key ``agw apply`` stores (SPEC §20.6)."""
+
+    name: str | None = Field(
+        default=None, min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_-]*$"
+    )
     subject: PolicySubject
     actions: tuple[ActionPattern, ...] = Field(min_length=1)
     resources: ResourceSelector

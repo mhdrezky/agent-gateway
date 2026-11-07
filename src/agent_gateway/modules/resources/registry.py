@@ -71,14 +71,22 @@ class StoredResourceRegistry:
         tags: Sequence[str] | None = None,
         attributes: Mapping[str, Any] | None = None,
         credential_id: str | None = None,
+        detach_credential: bool = False,
     ) -> Resource:
-        """Change the given fields; ``None`` leaves a field as it is."""
+        """Change the given fields; ``None`` leaves a field as it is.
+
+        ``detach_credential`` clears ``credential_id``; passing a new id with it is refused.
+        """
+        if detach_credential and credential_id is not None:
+            raise InvalidParamsError("cannot set and detach a credential at once")
         changes: dict[str, Any] = {}
         if name is not None:
             changes["name"] = name
         if tags is not None:
             changes["tags"] = _tags(tags)
-        if credential_id is not None:
+        if detach_credential:
+            changes["credential_id"] = None
+        elif credential_id is not None:
             changes["credential_id"] = _credential_id(credential_id)
 
         def apply(resource: Resource) -> Resource:
@@ -98,6 +106,11 @@ class StoredResourceRegistry:
     async def delete(self, resource_id: str) -> bool:
         async with self._write_lock:
             return await self._resources.delete(resource_id)
+
+    def normalized_attributes(
+        self, type: ResourceType, attributes: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        return self._attributes(type, attributes)
 
     def _attributes(self, type: ResourceType, attributes: Mapping[str, Any]) -> dict[str, Any]:
         schema = self._schemas.get(type)

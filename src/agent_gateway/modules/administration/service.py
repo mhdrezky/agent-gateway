@@ -2,8 +2,10 @@
 
 Every method requires an admin principal and writes one audit entry per change. Secrets
 go in through ``create_credential`` / ``rotate_credential`` and never come back out.
+``credential_secret_matches`` opens a secret only to compare it, then wipes the plaintext.
 """
 
+import hmac
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
@@ -13,6 +15,7 @@ from agent_gateway.common.errors import (
     AdminRequiredError,
     AgentNotFoundError,
     ConflictError,
+    InvalidParamsError,
     NotFoundError,
 )
 from agent_gateway.common.ids import IdPrefix, new_id
@@ -91,10 +94,18 @@ class AdminService:
         return await self._identity.list_agents()
 
     async def create_agent(
-        self, actor: Principal, name: str, *, description: str = "", roles: Sequence[str] = ()
+        self,
+        actor: Principal,
+        name: str,
+        *,
+        description: str = "",
+        roles: Sequence[str] = (),
+        status: AgentStatus = AgentStatus.ACTIVE,
     ) -> Agent:
         _require_admin(actor)
-        agent = await self._identity.create_agent(name, description=description, roles=roles)
+        agent = await self._identity.create_agent(
+            name, description=description, roles=roles, status=status
+        )
         await self._record(actor, AuditEventType.AGENT_CREATED, {"agent_id": agent.id})
         return agent
 
@@ -184,14 +195,30 @@ class AdminService:
         tags: Sequence[str] | None = None,
         attributes: Mapping[str, Any] | None = None,
         credential_id: str | None = None,
+        detach_credential: bool = False,
     ) -> Resource:
         _require_admin(actor)
-        await self._require_credential(credential_id)
+        if detach_credential and credential_id is not None:
+            raise InvalidParamsError("cannot set and detach a credential at once")
+        if not detach_credential:
+            await self._require_credential(credential_id)
         resource = await self._resources.update(
-            resource_id, name=name, tags=tags, attributes=attributes, credential_id=credential_id
+            resource_id,
+            name=name,
+            tags=tags,
+            attributes=attributes,
+            credential_id=credential_id,
+            detach_credential=detach_credential,
         )
         await self._record(actor, AuditEventType.RESOURCE_UPDATED, {"resource_id": resource.id})
         return resource
+
+    def preview_resource_attributes(
+        self, actor: Principal, type: ResourceType, attributes: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """The attributes ``create_resource`` would store, without writing."""
+        _require_admin(actor)
+        return self._resources.normalized_attributes(type, attributes)
 
     async def delete_resource(self, actor: Principal, resource_id: str) -> bool:
         _require_admin(actor)
@@ -223,6 +250,17 @@ class AdminService:
             {"credential_id": meta.id, "version": meta.version},
         )
         return meta
+
+    async def credential_secret_matches(
+        self, actor: Principal, credential_id: str, payload: SecretPayload
+    ) -> bool:
+        """Whether the stored secret equals ``payload``. The opened plaintext is wiped."""
+        _require_admin(actor)
+        opened = await self._credentials.open(credential_id)
+        try:
+            return _secrets_equal(opened, payload)
+        finally:
+            opened.wipe()
 
     async def delete_credential(self, actor: Principal, credential_id: str) -> bool:
         _require_admin(actor)
@@ -270,10 +308,14 @@ class AdminService:
         effect: PolicyEffect,
         approval: ApprovalMode = ApprovalMode.BY_RISK,
         expires_at: datetime | None = None,
+        name: str | None = None,
     ) -> Policy:
         _require_admin(actor)
+        if name is not None and any(item.name == name for item in await self._policies.all()):
+            raise ConflictError(f"a policy named {name!r} already exists")
         policy = Policy(
             id=new_id(IdPrefix.POLICY),
+            name=name,
             subject=subject,
             actions=tuple(actions),
             resources=resources,
@@ -287,6 +329,10 @@ class AdminService:
 
     async def replace_policy(self, actor: Principal, policy: Policy) -> Policy:
         _require_admin(actor)
+        if policy.name is not None and any(
+            item.name == policy.name and item.id != policy.id for item in await self._policies.all()
+        ):
+            raise ConflictError(f"a policy named {policy.name!r} already exists")
         try:
             await self._policies.update(policy.id, lambda _: policy)
         except ItemNotFoundError:
@@ -320,6 +366,26 @@ class AdminService:
             actor,
             AuditEventType.USER_UPDATED,
             {"user_id": user.id, **match.model_dump(exclude_none=True), "roles": list(user.roles)},
+        )
+        return user
+
+    async def set_user_roles(self, actor: Principal, user_id: str, roles: Sequence[str]) -> User:
+        _require_admin(actor)
+        try:
+            user = await self._user_store().update(
+                user_id,
+                lambda current: current.model_copy(update={"roles": tuple(dict.fromkeys(roles))}),
+            )
+        except ItemNotFoundError:
+            raise NotFoundError(f"user {user_id} not found") from None
+        await self._record(
+            actor,
+            AuditEventType.USER_UPDATED,
+            {
+                "user_id": user.id,
+                **user.match.model_dump(exclude_none=True),
+                "roles": list(user.roles),
+            },
         )
         return user
 
@@ -422,6 +488,19 @@ class AdminService:
                 details=details,
             )
         )
+
+
+def _secrets_equal(left: SecretPayload, right: SecretPayload) -> bool:
+    if left.type is not right.type or not _same_text(left.reveal(), right.reveal()):
+        return False
+    names = left.field_names()
+    if sorted(names) != sorted(right.field_names()):
+        return False
+    return all(_same_text(left.field(name), right.field(name)) for name in names)
+
+
+def _same_text(left: str, right: str) -> bool:
+    return hmac.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
 
 
 def _require_admin(actor: Principal) -> None:

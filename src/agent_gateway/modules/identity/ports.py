@@ -22,7 +22,12 @@ class Authenticator(Protocol):
 
 class IdentityService(Protocol):
     async def create_agent(
-        self, name: str, *, description: str = "", roles: Sequence[str] = ()
+        self,
+        name: str,
+        *,
+        description: str = "",
+        roles: Sequence[str] = (),
+        status: AgentStatus = AgentStatus.ACTIVE,
     ) -> Agent: ...
 
     async def get_agent(self, agent_id: str) -> Agent | None: ...

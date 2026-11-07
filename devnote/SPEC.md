@@ -382,6 +382,7 @@ Pola action mendukung wildcard `*` hanya di segmen terakhir.
 ```json
 {
   "id": "pol_01JB8...",
+  "name": null,
   "subject": { "agent_id": "agt_01JB8..." },
   "actions": ["ssh.service.restart"],
   "resources": { "ids": ["res_homelab1"], "tags": ["env:staging"] },
@@ -395,6 +396,7 @@ Pola action mendukung wildcard `*` hanya di segmen terakhir.
 - `effect`: `allow` | `deny`.
 - `approval`: `never` | `always` | `by_risk` (default: ikut `risk` action) | `requester` (fase 4, diputuskan oleh user peminta, §13b).
 - Resource cocok jika id ada di `ids` **atau** semua tag di `tags` dimiliki resource.
+- `name` (opsional, fase 4, slice 9): kunci idempoten `agw apply` (§20.6). `null` untuk policy yang dibuat CLI atau REST. Policy fase 2 tanpa field ini tetap terbaca.
 
 ### 8.5 Resource (`resources.json`)
 
@@ -522,7 +524,7 @@ Catatan gateway tentang siapa boleh apa untuk user aplikasi (kontrak `agentgate-
 - `match` berisi tepat satu dari `subject` (klaim `sub` sama persis) atau `group` (ada di klaim grup token).
 - Role user = gabungan role semua item yang cocok. Tidak ada yang cocok → role kosong (bukan error).
 - File baru; `var/` fase 2 tanpa `users.json` tetap terbaca (koleksi kosong).
-- Dikelola admin: `agw user add --group staff --role staff`, `agw user add --subject <sub> --role author`, `agw user list`, `agw user delete <usr_id>` (nanti juga `agw apply`, slice 9). Setiap perubahan diaudit `user.updated`.
+- Dikelola admin: `agw user add --group staff --role staff`, `agw user add --subject <sub> --role author`, `agw user list`, `agw user delete <usr_id>`, dan `agw apply` (§20.6). Setiap perubahan diaudit `user.updated`.
 
 ## 9. Authentication
 
@@ -1383,7 +1385,7 @@ Slice, masing-masing di branch sendiri, dengan SPEC diubah lebih dulu:
 | 6 | Broker `sql` | Port SQL gate agentgate (satu `SELECT`, tabel yang diizinkan, row cap, `limited`) beserta tesnya. Postgres dulu, T-SQL menyusul |
 | 7 | Broker `smtp` | Port konektor mail agentgate (domain yang diizinkan, STARTTLS), action `mail.send` risk `medium` approval `requester`. Mailpit di compose uji |
 | 8 | Correlation id | Dari `X-Correlation-Id` / `_meta` ke execution dan audit (§12) |
-| 9 | `agw apply <seed.yaml>` | Onboarding deklaratif dan idempoten (agent, role, policy, resource, user, referensi credential) |
+| 9 | `agw apply <seed.yaml>` | Onboarding deklaratif dan idempoten (agent, role, policy, resource, user, referensi credential) (§20.6) |
 | 10 | Endpoint model | Resource `model`, `GET /v1/models`, `POST /v1/models/{name}/chat` (non-streaming), mengembalikan `model_id` persis |
 
 **Tidak boleh terganggu (gate setiap slice):**
@@ -1397,6 +1399,33 @@ Slice, masing-masing di branch sendiri, dengan SPEC diubah lebih dulu:
 Instance gateway untuk agentgate terpisah dari instance homelab, dengan master key, `var/`, dan onboarding sendiri, serta `ssh.*` dan `docker.*` dimatikan lewat `actions.disabled`.
 
 Kriteria selesai fase 4: tes kontrak agentgate (`e2e/contract/` di repo agentgate) lulus terhadap image gateway bertag, dan gate di atas lulus.
+
+### 20.6 `agw apply` (fase 4, slice 9)
+
+`agw apply <seed.yaml>` membuat atau memperbarui isi satu instance supaya sama dengan file seed. Menjalankan file yang sama untuk kedua kali tidak mengubah data dan tidak menambah baris audit. Objek yang tidak disebut di seed dibiarkan: perintah ini tidak menghapus. CLI imperatif (`agw agent`, `agw role`, `agw policy`, ...) dan `agw-onboard-ssh` tetap. Perintah ini tidak menerbitkan token; token tetap lewat `agw token create`. `actions.disabled` tetap config instance, bukan isi seed.
+
+Seed adalah YAML. Field yang tidak dikenal ditolak. Secret tidak pernah ditulis di seed. Credential menyebut tepat satu dari `secret_env` (nama variabel environment) atau `secret_file` (path; relatif terhadap file seed bila tidak absolut). Isi file adalah teks secret; satu newline di akhir dibuang. Nilai kosong ditolak. Plaintext secret tidak masuk laporan, audit, atau pesan error. Membandingkan secret yang sudah tersimpan membuka amplop di proses admin (yang memang memegang master key) lalu menghapus plaintext dari memori.
+
+Identitas pencocokan, dan apa yang diperbarui bila objek itu sudah ada:
+
+| Jenis | Identitas | Bila sudah ada |
+| ----- | --------- | -------------- |
+| role | `id` | `description` dan `actions` |
+| agent | `name` | `description`, `roles`, `status` |
+| user | `subject` atau `group` | `roles`; `id` user tidak berubah |
+| credential | `name` | dibiarkan bila tipe, nilai, dan field sama; bila secret beda, dirotasi (versi naik). Tipe yang beda ditolak |
+| resource | `name` | tag, atribut, dan credential. Tipe yang beda ditolak. Credential yang tidak disebut lagi dilepas |
+| policy | `name` | subjek, action, resource, effect, approval, `expires_at`. Policy tanpa `name` tidak diikuti |
+
+`name` policy disimpan di `policies.json` (§8.4).
+
+Acuan dicek sebelum ada yang ditulis. Yang harus sudah ada di seed atau di data tersimpan: role yang disebut agent, user, atau subjek policy; nama agent pada subjek policy; nama resource pada policy; nama credential pada resource. Nama yang tidak ketemu ditolak, dan tidak ada yang ditulis. Nama ganda di dalam seed, atau lebih dari satu objek tersimpan dengan identitas yang sama, ditolak.
+
+Urutan tulis: credential, role, user, agent, resource, policy. Atribut resource divalidasi dengan schema yang terdaftar di proses ini. `sql_database` dan `smtp_server` hanya bisa dipakai bila broker-nya enabled, karena schema atributnya didaftarkan broker itu.
+
+Laporan JSON berisi `changes`. Tiap item punya `kind`, `name`, dan `result` (`created`, `updated`, atau `unchanged`). Untuk user, `name` berbentuk `group:<grup>` atau `subject:<sub>`.
+
+Bentuk seed (tanpa secret) ada di `config/seed.example.yaml`. Seed dev agentgate — agent `agentgate-practice` dan `agentgate-production`, role dan policy `sql.*` / `mail.*` / `model.*`, user staff/author/reviewer/lead, resource DB contoh, Mailpit, dan model dev — menyusul di repo agentgate dan memakai perintah yang sama.
 
 ## 21. Pertanyaan terbuka
 

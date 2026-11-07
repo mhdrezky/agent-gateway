@@ -31,6 +31,13 @@ class ResourceRegistry(Protocol):
         tags: Sequence[str] | None = None,
         attributes: Mapping[str, Any] | None = None,
         credential_id: str | None = None,
+        detach_credential: bool = False,
     ) -> Resource: ...
+
+    def normalized_attributes(
+        self, type: ResourceType, attributes: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Validate ``attributes`` and return the stored form, defaults included."""
+        ...
 
     async def delete(self, resource_id: str) -> bool: ...

@@ -206,6 +206,14 @@ uv run agw policy add -a "ssh.service.*" --role operator --tag env:prod
 uv run agw token create --agent <agent_id>         # prints the agent token once
 ```
 
+### Give an agent access (seed file)
+
+`agw apply <seed.yaml>` creates or updates the roles, agents, users, credentials, resources, and named policies a seed declares, and leaves everything else alone. Running it twice changes nothing the second time. Secrets come from the environment variable or file each credential names, never from the seed. See `config/seed.example.yaml` and SPEC §20.6. Tokens are still issued with `agw token create`.
+
+```bash
+uv run agw apply config/seed.example.yaml
+```
+
 ### Privileged access: `ssh.sudo`
 
 `ssh.sudo` runs any command as root on an SSH host (`sudo -n -- bash -lc <command>`), for agents that install and configure servers (Docker, Caddy, packages). It is off by default and needs all of these, each revocable on its own:
