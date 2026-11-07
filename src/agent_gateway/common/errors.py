@@ -57,6 +57,10 @@ class ApprovalNotFoundError(NotFoundError):
     code = "approval_not_found"
 
 
+class ModelNotFoundError(NotFoundError):
+    code = "model_not_found"
+
+
 class ConflictError(GatewayError):
     code = "conflict"
     status_code = 409
@@ -64,6 +68,16 @@ class ConflictError(GatewayError):
 
 class ApprovalNotPendingError(ConflictError):
     code = "approval_not_pending"
+
+
+class NamesMissingError(ConflictError):
+    """``POST /v1/bind`` named things this agent does not have; ``missing`` lists them."""
+
+    code = "names_missing"
+
+    def __init__(self, message: str, *, missing: dict[str, list[str]]) -> None:
+        super().__init__(message)
+        self.missing = missing
 
 
 class InvalidParamsError(GatewayError):

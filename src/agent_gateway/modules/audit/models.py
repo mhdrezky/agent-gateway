@@ -41,6 +41,8 @@ class AuditEventType(StrEnum):
     EXECUTION_FAILED = "execution.failed"
     ELEVATION_GRANTED = "elevation.granted"
     ELEVATION_REVOKED = "elevation.revoked"
+    MODEL_CHAT = "model.chat"
+    BIND_CHECKED = "bind.checked"
 
 
 class ActorType(StrEnum):

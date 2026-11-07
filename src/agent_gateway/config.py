@@ -93,6 +93,11 @@ class UserSettings(_Section):
     oidc: OidcSettings | None = None
 
 
+class BindSettings(_Section):
+    # User roles allowed to call POST /v1/bind: authors bind at promote, reviewers at approval.
+    roles: list[str] = Field(default_factory=lambda: ["author", "reviewer"])
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="AGW_",
@@ -110,6 +115,7 @@ class Settings(BaseSettings):
     actions: ActionSettings = Field(default_factory=ActionSettings)
     brokers: BrokerSettings = Field(default_factory=BrokerSettings)
     users: UserSettings = Field(default_factory=UserSettings)
+    bind: BindSettings = Field(default_factory=BindSettings)
 
     @classmethod
     def settings_customise_sources(

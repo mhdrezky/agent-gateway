@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
+import httpx
 from pydantic import BaseModel
 
 from agent_gateway.brokers.base import Broker
@@ -38,6 +39,8 @@ from agent_gateway.modules.identity.authenticator import TokenAuthenticator
 from agent_gateway.modules.identity.models import Agent, Token, User
 from agent_gateway.modules.identity.service import IdentityManager
 from agent_gateway.modules.identity.users import JwksSource, UserDirectory, build_user_directory
+from agent_gateway.modules.model_endpoints.models import ModelAttributes
+from agent_gateway.modules.model_endpoints.service import ModelService
 from agent_gateway.modules.resources.models import Resource, ResourceType
 from agent_gateway.modules.resources.registry import StoredResourceRegistry
 from agent_gateway.modules.storage.atomic import cleanup_stale_temp_files
@@ -66,6 +69,7 @@ class Gateway:
     identity: IdentityManager
     engine: GatewayExecutionEngine
     admin: AdminService
+    models: ModelService
     _dispatcher: asyncio.Task[None] | None = field(default=None, init=False)
 
     async def start(self, *, background: bool = True) -> None:
@@ -110,6 +114,7 @@ def build_gateway(
     keyring: KeyRing | None = None,
     clock: Clock | None = None,
     jwks: JwksSource | None = None,
+    model_transport: httpx.AsyncBaseTransport | None = None,
 ) -> Gateway:
     clock = clock or SystemClock()
     keyring = keyring or MasterKeyRing.from_file(settings.master_key_file)
@@ -130,7 +135,7 @@ def build_gateway(
     users_data = JsonCollection(var / "users.json", User, locker=locker, clock=clock)
 
     registry = InMemoryActionRegistry(disabled=settings.actions.disabled)
-    schemas: dict[ResourceType, type[BaseModel]] = {}
+    schemas: dict[ResourceType, type[BaseModel]] = {ResourceType.MODEL: ModelAttributes}
     for broker in brokers if brokers is not None else default_brokers(settings):
         broker.register(registry)
         schemas.update(broker.resource_attribute_models())
@@ -149,6 +154,7 @@ def build_gateway(
     )
     approvals = ApprovalWorkflow(approvals_data, audit, clock, settings.approvals)
     elevations = ElevationService(elevations_data, audit, clock)
+    policy_engine = DefaultPolicyEngine()
     engine = GatewayExecutionEngine(
         executions=FileExecutionStore(var / "executions", locker=locker),
         registry=registry,
@@ -156,7 +162,7 @@ def build_gateway(
         credentials=credentials,
         roles=roles,
         policies=policies,
-        policy_engine=DefaultPolicyEngine(),
+        policy_engine=policy_engine,
         approvals=approvals,
         audit=audit,
         clock=clock,
@@ -175,6 +181,16 @@ def build_gateway(
         clock=clock,
         elevations=elevations,
         users=users_data,
+    )
+    models = ModelService(
+        resources=resources,
+        credentials=credentials,
+        roles=roles,
+        policies=policies,
+        policy_engine=policy_engine,
+        audit=audit,
+        clock=clock,
+        transport=model_transport,
     )
     return Gateway(
         settings=settings,
@@ -197,4 +213,5 @@ def build_gateway(
         identity=identity,
         engine=engine,
         admin=admin,
+        models=models,
     )

@@ -29,6 +29,7 @@ RULES: list[tuple[str, tuple[str, ...]]] = [
     ("modules.approvals", ("modules.crypto",)),
     ("modules.resources", ("modules.crypto",)),
     ("modules.execution", ("modules.crypto",)),
+    ("modules.model_endpoints", ("modules.crypto", "brokers")),
     ("common", ("modules", "brokers", "apps", "cli", "config")),
 ]
 

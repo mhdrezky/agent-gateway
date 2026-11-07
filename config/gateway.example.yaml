@@ -30,3 +30,6 @@ brokers:
   docker:
     enabled: false       # mounting the Docker socket is root-equivalent on the host
     socket: unix:///var/run/docker.sock
+
+bind:
+  roles: [author, reviewer]   # user roles that may call POST /v1/bind
