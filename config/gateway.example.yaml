@@ -34,3 +34,6 @@ brokers:
     enabled: false       # sql.query on sql_database resources (read-only, gated SELECT)
   smtp:
     enabled: false       # mail.send (SPEC §11.5); only on the instance that sends mail
+
+bind:
+  roles: [author, reviewer]   # user roles that may call POST /v1/bind

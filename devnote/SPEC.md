@@ -121,7 +121,8 @@ agent-gateway/
 │   │   ├── approvals/           # state machine approval
 │   │   ├── audit/               # writer & verifier hash chain
 │   │   ├── execution/           # orkestrasi pipeline eksekusi, store, dispatcher approval
-│   │   └── administration/      # operasi admin ber-audit (REST admin + CLI)
+│   │   ├── administration/      # operasi admin ber-audit (REST admin + CLI)
+│   │   └── model_endpoints/     # resource model: daftar & chat OpenAI-compatible (fase 4)
 │   ├── brokers/
 │   │   ├── base.py              # Broker protocol & ActionContext
 │   │   ├── ssh/
@@ -174,6 +175,7 @@ semua module persisten ──▶ storage
 - `apps/mcp_server` tidak boleh meng-import `modules`, `brokers`, `runtime`, `cli`, atau `apps.api_server`; ia hanya bicara HTTP ke REST API.
 - `modules` tidak boleh meng-import `apps`, `cli`, atau `runtime`. Hanya `runtime.py` (composition root), `cli.py`, dan `apps` yang merangkai implementasi konkret.
 - Hanya `credentials` yang boleh memanggil fungsi dekripsi dari `crypto`. `identity` (HMAC token) dan `audit` (anchor) hanya boleh memakai `KeyRing.subkey`. `authorization`, `action_registry`, `approvals`, `resources`, `execution` tidak boleh meng-import `crypto`.
+- `model_endpoints` tidak boleh meng-import `crypto` atau `brokers`; credential hanya lewat `CredentialStore.open` (§7.5).
 - `common` tidak boleh meng-import module lain mana pun.
 - Tidak ada relative import.
 
@@ -204,6 +206,7 @@ Semua model turunan `common.models.StrictModel` (immutable, `extra="forbid"`); m
 | `audit` | Menulis event berantai hash, verifikasi chain | Mencatat secret |
 | `execution` | Menjalankan pipeline lengkap (§12) | Logika spesifik broker |
 | `brokers/*` | Menjalankan operasi nyata ke sistem eksternal | Menerima perintah bebas |
+| `model_endpoints` | Resource `model`: memutuskan izin `model.chat`, meneruskan satu giliran chat ke server OpenAI-compatible, audit tanpa teks pesan (§15.4) | Menyimpan isi pesan, menunggu approval |
 
 ## 6. Storage engine
 
@@ -321,7 +324,7 @@ offset  ukuran  isi
 
 ### 7.5 Penanganan plaintext di memori
 
-- Plaintext credential hanya hidup di dalam `ActionContext` selama eksekusi broker.
+- Plaintext credential hanya hidup di dalam `ActionContext` selama eksekusi broker. Pengecualian fase 4: `modules/model_endpoints` membuka credential resource `model` (`CredentialStore.open`) hanya selama satu panggilan upstream, lalu `wipe()`; nilainya ikut diredaksi dari jawaban model.
 - Disimpan sebagai `bytearray` / `SecretStr` dan dihapus referensinya setelah broker selesai.
 - `__repr__` dari objek secret selalu `"***"`.
 
@@ -414,6 +417,32 @@ Pola action mendukung wildcard `*` hanya di segmen terakhir.
 ```
 
 `type` yang dikenal: `ssh_host`, `docker_host`, `github_repo`, `cloudflare_zone`, `http_endpoint`, serta untuk fase 4 `sql_database` (broker `sql`, slice 6), `smtp_server` (broker `smtp`, slice 7), dan `model` (endpoint model, slice 10). `attributes` divalidasi oleh schema per type yang didaftarkan broker.
+
+#### Resource `model` (fase 4, slice 10)
+
+Satu resource `model` = **satu model persis**. `name` resource adalah nama model yang dipakai aplikasi (mis. `default`). Schema atributnya didaftarkan oleh `runtime.py` dari `modules/model_endpoints/models.py` (bukan broker):
+
+```json
+{
+  "id": "res_01JB8...",
+  "type": "model",
+  "name": "default",
+  "tags": ["env:practice"],
+  "attributes": {
+    "base_url": "http://vllm:8000",
+    "model_id": "vllm:qwen3-32b@rev-2f4c1a9",
+    "options": { "chat_template_kwargs": { "enable_thinking": false }, "reasoning_effort": "none" },
+    "timeout_seconds": 60
+  },
+  "credential_id": "cred_01JB8..."
+}
+```
+
+- `base_url`: root server OpenAI-compatible (`http`/`https`, tanpa `/` di akhir); gateway memanggil `<base_url>/v1/chat/completions`.
+- `model_id`: model upstream persis, dikirim sebagai field `model`. Alias `latest` (atau tag `:latest`) ditolak saat validasi (K1).
+- `options` (opsional): field body tambahan yang digabung ke setiap request. Key `model`, `messages`, `tools`, `tool_choice`, dan `stream` ditolak agar opsi tidak bisa mengganti model atau mengaktifkan streaming.
+- `timeout_seconds` (default 60, 1–600): timeout panggilan upstream.
+- `credential_id` (opsional): credential `api_token`; nilainya dikirim sebagai `Authorization: Bearer <value>` dan tidak pernah keluar dari gateway.
 
 ### 8.6 Credential metadata (`credentials.json`)
 
@@ -577,6 +606,15 @@ Bila principal membawa user (§9.4), scope = **user ∩ agent**. Langkah 1–6 d
 Tanpa user, policy bersubjek `user`/`user_role` tidak pernah cocok, sehingga keputusan sama persis dengan fase 2 (D14).
 
 Visibilitas mengikuti scope yang sama: `GET /v1/actions` dan `tools/list` di `/mcp/actions` hanya memuat action yang tercakup role agent dan role user; `GET /v1/resources` hanya resource yang dipilih `allow` di kedua sisi. Execution yang diminta atas nama user hanya terlihat oleh user itu (`get`/`list` dengan `X-User-Token` difilter `user_subject`); panggilan agent saja tetap melihat semua execution agent itu.
+
+### 10.4 Izin model (`model.chat`, fase 4)
+
+Izin memakai model tidak punya mekanisme sendiri; ia memakai role dan policy biasa lewat satu `ActionDefinition` tetap `model.chat` (broker `model`, risk `low`, `resource_type` `model`) di `modules/model_endpoints/models.py`.
+
+- `model.chat` **tidak didaftarkan** di action registry, sehingga tidak muncul di `GET /v1/actions`, tidak menjadi tool MCP, dan tidak bisa di-submit lewat `POST /v1/executions` (P4 tetap berlaku untuk action biasa).
+- Role dan policy memberi `model.chat` pada resource `model` seperti action lain (`agw role set app -a model.chat`, policy `actions: ["model.chat"]` dengan `resources.ids`/`tags`). Wildcard `model.*` juga mencakupnya.
+- Keputusan dibuat oleh `DefaultPolicyEngine` dengan principal pemanggil, jadi scope user ∩ agent (§10.3) berlaku persis sama.
+- Keputusan `allow` yang mewajibkan approval diperlakukan sebagai **deny**: satu giliran chat tidak bisa menunggu approval. Admin memakai `approval: never` (atau `by_risk`, karena risk `low` tidak pernah butuh approval) untuk policy model.
 
 ## 11. Action Registry & Broker interface
 
@@ -827,7 +865,7 @@ Pipeline:
 7. **Execute:** status `running` → dekripsi credential → panggil broker dengan timeout → simpan hasil → audit.
 8. Kembalikan execution (`200` jika selesai sinkron).
 
-`correlation_id` opsional. REST membacanya dari header `X-Correlation-Id`; `tools/call` (di `/mcp/actions` maupun `/mcp`) dari `_meta["agentgate/correlation_id"]`, dan dari header bila `_meta` tidak membawanya. Bila keduanya ada dan berbeda, permintaan ditolak `422` (`invalid_params`) tanpa execution. Nilainya 1–200 karakter tanpa karakter kontrol. Ia disimpan di execution dan di `details.correlation_id` pada setiap event audit execution itu (termasuk approval-nya). Ia bukan bagian dari `params_digest` dan tidak mengubah idempotensi. Tanpa id, tidak ada field baru di baris audit, sehingga rantai hash fase 2 tetap sah.
+`correlation_id` opsional. REST membacanya dari header `X-Correlation-Id`; `tools/call` (di `/mcp/actions` maupun `/mcp`) dari `_meta["agentgate/correlation_id"]`, dan dari header bila `_meta` tidak membawanya. Chat memakai header yang sama, atau field `correlation_id` di `ChatIn` (§15.4). `POST /v1/bind` menyalin header ke event `bind.checked`. Bila dua sumber ada dan berbeda, permintaan ditolak `422` (`invalid_params`) tanpa execution atau panggilan upstream. Nilainya 1–200 karakter tanpa karakter kontrol. Pada execution ia disimpan di record dan di `details.correlation_id` pada setiap event audit execution itu (termasuk approval-nya). Ia bukan bagian dari `params_digest` dan tidak mengubah idempotensi. Tanpa id, tidak ada field baru di baris audit, sehingga rantai hash fase 2 tetap sah.
 
 Eksekusi yang sudah disetujui dijalankan sebagai background task di proses yang sama. Saat restart, execution berstatus `running` ditandai `failed` dengan error `interrupted` (tidak di-retry otomatis), sedangkan execution `approved` yang belum sempat jalan akan dijalankan.
 
@@ -937,7 +975,7 @@ Satu baris JSON per event di `var/audit/<yyyy-mm-dd>.jsonl`:
 
 ### 14.2 Event
 
-`auth.failed`, `token.created`, `token.revoked`, `agent.created`, `agent.updated`, `resource.*`, `credential.created`, `credential.rotated`, `policy.*`, `user.updated` (fase 4), `execution.requested`, `execution.denied`, `execution.rejected`, `approval.requested`, `approval.approved`, `approval.rejected`, `approval.expired`, `execution.started`, `execution.succeeded`, `execution.failed`.
+`auth.failed`, `token.created`, `token.revoked`, `agent.created`, `agent.updated`, `resource.*`, `credential.created`, `credential.rotated`, `policy.*`, `user.updated` (fase 4), `execution.requested`, `execution.denied`, `execution.rejected`, `approval.requested`, `approval.approved`, `approval.rejected`, `approval.expired`, `execution.started`, `execution.succeeded`, `execution.failed`, serta fase 4 `model.chat` dan `bind.checked` (§15.4).
 
 ### 14.3 Verifikasi
 
@@ -967,6 +1005,9 @@ Base path: `/v1`. Semua body JSON. Header `Authorization: Bearer <token>` wajib 
 | GET | `/v1/executions` | Daftar eksekusi agent sendiri (paginasi `?cursor=&limit=`) |
 | GET | `/v1/approvals/mine` | Approval `requester` milik user (`?status=`), wajib `X-User-Token` (§13b) |
 | POST | `/v1/approvals/{id}/decide` | `{"decision": "confirm"\|"reject"}`, wajib `X-User-Token` (§13b) |
+| GET | `/v1/models` | Model yang boleh dipakai pemanggil, `[{name, model_id}]` (fase 4, §15.4) |
+| POST | `/v1/models/{name}/chat` | Satu giliran chat non-streaming, `ChatIn` → `ChatOut` (fase 4, §15.4) |
+| POST | `/v1/bind` | Cek nama model, tool, dan resource untuk agent ini; wajib `X-User-Token` (fase 4, §15.4) |
 
 Request `POST /v1/executions`:
 
@@ -1022,11 +1063,37 @@ Endpoint `/v1/resources` untuk agent hanya mengembalikan `id`, `type`, `name`, `
 | ---- | ------ |
 | 401 | `unauthenticated` |
 | 403 | `action_not_allowed`, `admin_required` |
-| 404 | `action_not_found`, `resource_not_found`, `execution_not_found`, `agent_not_found`, `credential_not_found`, `approval_not_found` |
-| 409 | `approval_not_pending`, `conflict` |
+| 404 | `action_not_found`, `resource_not_found`, `execution_not_found`, `agent_not_found`, `credential_not_found`, `approval_not_found`, `model_not_found` |
+| 409 | `approval_not_pending`, `conflict`, `names_missing` |
 | 422 | `invalid_params` |
 | 429 | `rate_limited` |
 | 503 | `audit_unavailable` |
+
+Error `names_missing` membawa field tambahan `missing` (`{"models": [...], "tools": [...], "resources": [...]}`) di dalam objek `error`; error lain tidak berubah bentuk.
+
+### 15.4 Endpoint model dan cek nama (fase 4, slice 10)
+
+Router `apps/api_server/routes_models.py`, logika model di `modules/model_endpoints/service.py`. Kontrak: `agentgate-gateway/1` §5 dan §7.
+
+**`GET /v1/models`** → `[{"name": "default", "model_id": "vllm:qwen3-32b@rev-2f4c1a9"}]`, diurutkan menurut `name`: setiap resource `model` yang boleh di-chat pemanggil (§10.4, tanpa approval). User valid tanpa role → `[]` (`200`).
+
+**`POST /v1/models/{name}/chat`** dengan `ChatIn` (`messages`, `tools?`, `temperature?`, `max_tokens?`, `correlation_id?`) → `ChatOut` (`status`, `message`, `usage`, `error`, `model_id`):
+
+1. Tidak ada resource `model` bernama `name` → `404 model_not_found`.
+2. Token admin, atau keputusan `deny` / butuh approval → `200` dengan `status: "denied"` dan satu baris aman (`model '<name>' is not allowed for this caller`).
+3. Body upstream: `{"model": model_id, "messages": ..., **options}`, lalu `tools` (+ `tool_choice: "auto"`), `temperature`, `max_tokens` dari `ChatIn` bila ada. Credential (bila ada) dikirim sebagai Bearer.
+4. Upstream gagal (koneksi, timeout, status non-2xx, JSON tidak sesuai) → `200` dengan `status: "error"` dan pesan aman (`model call failed: <jenis error>`); detail hanya di log server.
+5. Berhasil → `status: "ok"`, `message` = `choices[0].message`, `usage`, dan `model_id` selalu terisi.
+
+Isi pesan **tidak pernah disimpan**: tidak ada execution record, tidak ada teks di audit. Setiap panggilan (termasuk `404` dan `denied`) dicatat sebagai satu event `model.chat` setelah selesai, dengan `resource_id` dan `details` `{model, model_id, user, correlation_id, outcome, reason?, prompt_tokens, completion_tokens, tool_calls}` (`outcome`: `ok`, `denied`, `error`, `not_found`). Bila audit gagal ditulis, jawaban tidak dikembalikan (`503 audit_unavailable`).
+
+**`POST /v1/bind`** dengan `BindIn {models, tools, resources}` (nama gateway) memeriksa bahwa nama-nama itu ada **untuk agent ini** (bukan untuk grant user):
+
+- `models`: nama resource `model` yang boleh di-chat sisi agent (principal tanpa user);
+- `tools`: nama tool (`.` → `_`) dari action yang tercakup role agent;
+- `resources`: id resource yang terlihat oleh agent (sama dengan `GET /v1/resources` tanpa user).
+
+Hasil: `200 {"models": {name: model_id}}`, atau `409` `{"error": {"code": "names_missing", "message": ..., "missing": {"models": [...], "tools": [...], "resources": [...]}}}` dengan daftar terurut tanpa duplikat. Syarat: token agent dan `X-User-Token` (tanpa itu `401 unauthenticated`), dan user memegang salah satu role di `bind.roles` (default `["author", "reviewer"]`, §17), selain itu `403 action_not_allowed`. Setiap panggilan diaudit sebagai `bind.checked` dengan `details` `{user, models, tools, resources, outcome, correlation_id?, missing?, bound_models?}`. `correlation_id` diisi dari header `X-Correlation-Id` (§12). (`outcome`: `ok`, `missing`, `forbidden`, `no_user`).
 
 OpenAPI di-generate otomatis oleh FastAPI dan diekspor ke `devnote/openapi.json` pada setiap rilis.
 
@@ -1150,6 +1217,8 @@ users:
     algorithms: [RS256, ES256]
     leeway_seconds: 30
     jwks_cache_seconds: 300
+bind:
+  roles: [author, reviewer]   # role user yang boleh memanggil POST /v1/bind (§15.4)
 ```
 
 Setiap nilai bisa di-override dengan env `AGW_<SECTION>__<KEY>` (contoh `AGW_APPROVALS__TTL_MINUTES=30`). Konfigurasi divalidasi dengan Pydantic Settings saat start.

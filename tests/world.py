@@ -136,10 +136,16 @@ def settings(tmp_path: Path) -> Settings:
 
 
 async def build_world(
-    settings: Settings, *, approval: ApprovalMode, jwks: JwksSource | None = None
+    settings: Settings,
+    *,
+    approval: ApprovalMode,
+    jwks: JwksSource | None = None,
+    model_transport: httpx.AsyncBaseTransport | None = None,
 ) -> World:
     fake = FakeBroker()
-    gateway = build_gateway(settings, brokers=[fake, TestBroker()], jwks=jwks)
+    gateway = build_gateway(
+        settings, brokers=[fake, TestBroker()], jwks=jwks, model_transport=model_transport
+    )
     await gateway.start(background=False)
     admin = gateway.admin
 
