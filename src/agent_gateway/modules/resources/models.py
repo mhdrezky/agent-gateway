@@ -17,6 +17,10 @@ class ResourceType(StrEnum):
     GITHUB_REPO = "github_repo"
     CLOUDFLARE_ZONE = "cloudflare_zone"
     HTTP_ENDPOINT = "http_endpoint"
+    # Phase 4 (agentgate-gateway/1): served by the sql and smtp brokers and model endpoints.
+    SQL_DATABASE = "sql_database"
+    SMTP_SERVER = "smtp_server"
+    MODEL = "model"
 
 
 class Resource(Record):

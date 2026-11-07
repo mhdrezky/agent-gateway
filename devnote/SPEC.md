@@ -412,7 +412,7 @@ Pola action mendukung wildcard `*` hanya di segmen terakhir.
 }
 ```
 
-`type` yang dikenal: `ssh_host`, `docker_host`, `github_repo`, `cloudflare_zone`, `http_endpoint`. `attributes` divalidasi oleh schema per type yang didaftarkan broker.
+`type` yang dikenal: `ssh_host`, `docker_host`, `github_repo`, `cloudflare_zone`, `http_endpoint`, serta untuk fase 4 `sql_database` (broker `sql`, slice 6), `smtp_server` (broker `smtp`, slice 7), dan `model` (endpoint model, slice 10). `attributes` divalidasi oleh schema per type yang didaftarkan broker.
 
 ### 8.6 Credential metadata (`credentials.json`)
 
