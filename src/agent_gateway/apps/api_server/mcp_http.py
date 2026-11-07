@@ -9,6 +9,7 @@ acts as the agent that sent it. Tools call the same execution engine as REST (P6
 from collections.abc import Mapping
 from typing import Any
 
+from mcp.server.lowlevel import Server
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import ValidationError
@@ -32,7 +33,7 @@ INSTRUCTIONS = (
     "Some actions need human approval: the result then has status 'pending_approval'; "
     "poll get_execution with its id instead of submitting again."
 )
-AGENT_ONLY = "only agent tokens can use /mcp"
+AGENT_ONLY = "only agent tokens can use MCP"
 
 
 def _error(exc: GatewayError) -> dict[str, Any]:
@@ -122,7 +123,7 @@ def build_mcp_server(gateway: Gateway) -> MCPServer:
 
 
 class AgentAuth:
-    """Rejects ``/mcp`` requests without a valid agent token before MCP sees them."""
+    """Rejects MCP requests without a valid agent token before MCP sees them."""
 
     def __init__(self, app: ASGIApp, gateway: Gateway, limiter: FailureLimiter) -> None:
         self._app = app
@@ -143,9 +144,13 @@ class AgentAuth:
 
 
 def mcp_endpoint(
-    server: MCPServer, gateway: Gateway, limiter: FailureLimiter, extra_hosts: list[str]
+    server: MCPServer | Server[Any],
+    gateway: Gateway,
+    limiter: FailureLimiter,
+    extra_hosts: list[str],
+    path: str = MCP_PATH,
 ) -> ASGIApp:
-    """The authenticated ASGI app to route at ``/mcp``. Run ``server.session_manager``."""
+    """The authenticated ASGI app to route at ``path``. Run ``server.session_manager``."""
     security = TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
         allowed_hosts=[*LOCAL_HOSTS, *extra_hosts],
@@ -153,11 +158,11 @@ def mcp_endpoint(
         + [f"https://{h}" for h in extra_hosts],
     )
     starlette_app = server.streamable_http_app(
-        streamable_http_path=MCP_PATH,
+        streamable_http_path=path,
         stateless_http=True,
         json_response=True,
         transport_security=security,
     )
-    [route] = [r for r in starlette_app.routes if getattr(r, "path", None) == MCP_PATH]
+    [route] = [r for r in starlette_app.routes if getattr(r, "path", None) == path]
     endpoint: ASGIApp = route.endpoint  # type: ignore[attr-defined]
     return AgentAuth(endpoint, gateway, limiter)

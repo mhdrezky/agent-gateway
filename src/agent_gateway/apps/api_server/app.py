@@ -14,6 +14,7 @@ from agent_gateway import __version__
 from agent_gateway.apps.admin_ui.setup import install_admin_ui
 from agent_gateway.apps.api_server import routes_admin, routes_agent
 from agent_gateway.apps.api_server.deps import FailureLimiter
+from agent_gateway.apps.api_server.mcp_actions import MCP_ACTIONS_PATH, build_actions_server
 from agent_gateway.apps.api_server.mcp_http import MCP_PATH, build_mcp_server, mcp_endpoint
 from agent_gateway.common.errors import GatewayError
 from agent_gateway.runtime import Gateway
@@ -35,14 +36,17 @@ def create_app(gateway: Gateway, *, manage_lifecycle: bool = True) -> FastAPI:
 
     mcp_server = build_mcp_server(gateway)
     limiter = FailureLimiter(gateway.settings.rate_limit.auth_failures_per_minute, gateway.clock)
-    mcp_app = mcp_endpoint(mcp_server, gateway, limiter, gateway.settings.server.public_hosts)
+    hosts = gateway.settings.server.public_hosts
+    mcp_app = mcp_endpoint(mcp_server, gateway, limiter, hosts)
+    actions_server = build_actions_server(gateway)
+    actions_app = mcp_endpoint(actions_server, gateway, limiter, hosts, MCP_ACTIONS_PATH)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         if manage_lifecycle:
             await gateway.start()
         try:
-            async with mcp_server.session_manager.run():
+            async with mcp_server.session_manager.run(), actions_server.session_manager.run():
                 yield
         finally:
             if manage_lifecycle:
@@ -52,6 +56,7 @@ def create_app(gateway: Gateway, *, manage_lifecycle: bool = True) -> FastAPI:
     app.state.gateway = gateway
     app.state.limiter = limiter
     app.router.routes.append(Route(MCP_PATH, endpoint=mcp_app))
+    app.router.routes.append(Route(MCP_ACTIONS_PATH, endpoint=actions_app))
 
     @app.exception_handler(GatewayError)
     async def gateway_error(_: Request, exc: GatewayError) -> JSONResponse:

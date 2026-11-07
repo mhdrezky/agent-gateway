@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -84,7 +85,10 @@ def start() -> str:
     compose("down", "-v", "--remove-orphans", check=False)
     compose("up", "-d", "sshd")
     output = compose("run", "--rm", "gateway", "agw", "init")
-    token = next(line for line in output.splitlines() if line.startswith("agw_tok_"))
+    match = re.search(r"\bagw_tok_\S+", output)
+    if match is None:
+        raise RuntimeError(f"agw init printed no admin token:\n{output}")
+    token = match.group(0)
     compose("up", "-d", "gateway")
     wait_for("gateway health", lambda: httpx.get(f"{URL}/v1/health").status_code == 200)
     return token

@@ -722,6 +722,7 @@ Base path: `/v1`. Semua body JSON. Header `Authorization: Bearer <token>` wajib 
 | Method | Path | Keterangan |
 | ------ | ---- | ---------- |
 | GET | `/v1/health` | Status gateway (tanpa auth) |
+| GET | `/v1/contract` | Versi kontrak yang dilayani, `{"versions": ["agentgate-gateway/1"]}` (tanpa auth, §22) |
 | GET | `/v1/whoami` | Identitas agent & role |
 | GET | `/v1/actions` | Action yang boleh dipakai agent ini, beserta JSON schema params |
 | GET | `/v1/resources` | Resource yang bisa dipakai agent ini (tanpa atribut sensitif) |
@@ -833,6 +834,16 @@ Sejak 2026-11-01 gateway melayani MCP langsung di `/mcp` (`apps/api_server/mcp_h
 - Mode stateless + JSON response: tidak ada sesi MCP yang disimpan di memori server.
 - Proteksi DNS rebinding: hanya Host `127.0.0.1`, `localhost`, `[::1]`, plus `server.public_hosts` di config.
 - Diuji di container nyata ke `tybozen-server`: `ssh.system.info` lewat `/mcp` berhasil.
+
+### Endpoint `/mcp/actions` (tool profile, kontrak `agentgate-gateway/1`)
+
+Untuk aplikasi seperti agentgate yang menyerahkan tool langsung ke model (`apps/api_server/mcp_actions.py`). Transport, autentikasi, mode stateless, dan proteksi DNS rebinding sama dengan `/mcp`; bedanya ada di bentuk tool:
+
+- `tools/list`: satu tool per action yang tercakup role pemanggil (`ExecutionEngine.visible_actions`), nama = id action dengan `.` → `_` (`sql.query` → `sql_query`, pola `^[a-zA-Z0-9_-]{1,64}$`). `inputSchema` = schema params action ditambah `resource_id` wajib dengan `enum` resource yang terlihat oleh pemanggil dan bertipe sama dengan action. Action tanpa resource yang bisa ditarget tidak dicantumkan. Daftar dihitung per request, jadi selalu sesuai role dan policy saat itu.
+- `tools/call`: memanggil `ExecutionEngine.submit` (P6). Argumen selain `resource_id` menjadi `params`. `structuredContent` = `ToolOutcome` `{status, execution_id, result, summary, error}`: `succeeded` → `ok` (`result` = `data`), `pending_approval` → `pending` (`summary` menyebut action dan resource yang menunggu), `denied` → `denied`, lainnya → `error`. `isError` benar untuk `denied` dan `error`. Error gateway juga menjadi `ToolOutcome` (`denied` untuk `action_not_allowed`, selain itu `error`), dengan pesan aman tanpa secret.
+- Nama tool yang tidak dikenal → `ToolOutcome` `error`, tanpa eksekusi.
+- Anotasi (`readOnlyHint`, `destructiveHint`), `_meta["agentgate/write"]`, dan scope user menyusul di slice 5 dan 2–3 (§20.5).
+- Meta-tool di `/mcp` dan bridge stdio tidak berubah.
 
 ### Bridge stdio (`agw-mcp`, opsional)
 
@@ -1043,11 +1054,11 @@ Slice, masing-masing di branch sendiri, dengan SPEC diubah lebih dulu:
 
 | # | Slice | Isi |
 | - | ----- | --- |
-| 1 | MCP Streamable HTTP | Endpoint `/mcp/actions` dengan bearer token agent, di samping stdio |
+| 1 | MCP Streamable HTTP | Endpoint `/mcp/actions` dengan bearer token agent, di samping `/mcp` dan stdio: satu tool per action, `resource_id` enum, hasil `ToolOutcome` (§16). Plus `GET /v1/contract` |
 | 2 | Identitas user | Verifikasi `X-User-Token` (OIDC: JWKS, `iss`, `aud`, `exp`), `users.json` (subject/grup → role), principal *user atas nama agent* |
 | 3 | Otorisasi delegasi | Scope = role user ∩ role agent; policy subject `user` dan `user_role` |
 | 4 | Approval `requester` | Mode approval baru yang diputuskan oleh user peminta; REST `GET /v1/approvals/mine`, `POST /v1/approvals/{id}/decide` |
-| 5 | Tool profile MCP | Satu tool per action (`sql.query` → `sql_query`), `resource_id` enum, anotasi `readOnlyHint` / `destructiveHint`, `_meta` |
+| 5 | Tool profile MCP | Melengkapi `/mcp/actions` dari slice 1: anotasi `readOnlyHint` / `destructiveHint`, `_meta["agentgate/write"]`, daftar tool mengikuti scope user ∩ agent |
 | 6 | Broker `sql` | Port SQL gate agentgate (satu `SELECT`, tabel yang diizinkan, row cap, `limited`) beserta tesnya. Postgres dulu, T-SQL menyusul |
 | 7 | Broker `smtp` | Port konektor mail agentgate (domain yang diizinkan, STARTTLS), action `mail.send` risk `medium` approval `requester`. Mailpit di compose uji |
 | 8 | Correlation id | Dari `X-Correlation-Id` / `_meta` ke execution dan audit |

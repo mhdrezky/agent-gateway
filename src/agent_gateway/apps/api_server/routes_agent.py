@@ -8,6 +8,7 @@ from agent_gateway import __version__
 from agent_gateway.apps.api_server.deps import GatewayDep, PrincipalDep
 from agent_gateway.apps.api_server.schemas import (
     ActionInfo,
+    ContractOut,
     ExecutionPage,
     Health,
     ResourceInfo,
@@ -19,10 +20,17 @@ from agent_gateway.modules.resources.models import ResourceType
 
 router = APIRouter(prefix="/v1")
 
+CONTRACT_VERSIONS = ("agentgate-gateway/1",)
+
 
 @router.get("/health")
 async def health() -> Health:
     return Health(status="ok", version=__version__)
+
+
+@router.get("/contract")
+async def contract() -> ContractOut:
+    return ContractOut(versions=list(CONTRACT_VERSIONS))
 
 
 @router.get("/whoami")

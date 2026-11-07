@@ -1,6 +1,6 @@
 """Request and response bodies that are specific to the REST API."""
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import AwareDatetime, Field, SecretStr
 
@@ -21,6 +21,20 @@ from agent_gateway.modules.resources.models import ResourceType
 class Health(StrictModel):
     status: str
     version: str
+
+
+class ContractOut(StrictModel):
+    versions: list[str]
+
+
+class ToolOutcome(StrictModel):
+    """``structuredContent`` of a ``/mcp/actions`` tool call (contract §4.2)."""
+
+    status: Literal["ok", "pending", "denied", "error"]
+    execution_id: str | None = None
+    result: dict[str, Any] | None = None
+    summary: str | None = None
+    error: str | None = None
 
 
 class WhoAmI(StrictModel):
