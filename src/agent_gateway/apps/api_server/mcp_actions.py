@@ -15,6 +15,11 @@ from mcp.server.context import ServerRequestContext
 from mcp.server.lowlevel import Server
 from pydantic import ValidationError
 
+from agent_gateway.apps.api_server.correlation import (
+    CORRELATION_HEADER,
+    header_value,
+    resolve_correlation,
+)
 from agent_gateway.apps.api_server.deps import principal_from_headers
 from agent_gateway.apps.api_server.mcp_http import AGENT_ONLY
 from agent_gateway.apps.api_server.schemas import ToolOutcome
@@ -147,6 +152,10 @@ def build_actions_server(gateway: Gateway) -> Server[Any]:
             resource_id = arguments.pop(RESOURCE_ARG, None)
             if not isinstance(resource_id, str):
                 raise InvalidParamsError(f"{RESOURCE_ARG} is required")
+            headers: Mapping[str, str] = getattr(ctx.request, "headers", None) or {}
+            correlation_id = resolve_correlation(
+                header_value(headers, CORRELATION_HEADER), params.meta
+            )
             try:
                 request = ExecutionRequest(
                     action=found[0], resource_id=resource_id, params=arguments
@@ -155,7 +164,9 @@ def build_actions_server(gateway: Gateway) -> Server[Any]:
                 raise InvalidParamsError(
                     f"invalid request: {exc.error_count()} problem(s)"
                 ) from None
-            execution = await gateway.engine.submit(principal, request)
+            execution = await gateway.engine.submit(
+                principal, request, correlation_id=correlation_id
+            )
         except GatewayError as exc:
             return _result(_error_outcome(exc))
         return _result(_outcome(execution))

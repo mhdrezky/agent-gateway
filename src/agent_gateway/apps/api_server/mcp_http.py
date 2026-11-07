@@ -17,6 +17,11 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from agent_gateway.apps.api_server.correlation import (
+    CORRELATION_HEADER,
+    header_value,
+    resolve_correlation,
+)
 from agent_gateway.apps.api_server.deps import (
     FailureLimiter,
     authenticate_request,
@@ -38,6 +43,16 @@ INSTRUCTIONS = (
     "poll get_execution with its id instead of submitting again."
 )
 AGENT_ONLY = "only agent tokens can use MCP"
+
+
+def _correlation(ctx: Context) -> str | None:
+    """``_meta`` of this tool call, else the ``X-Correlation-Id`` header (SPEC §12)."""
+    params = getattr(ctx, "_input_params", None)
+    meta = getattr(params, "meta", None)
+    return resolve_correlation(
+        header_value(ctx.headers, CORRELATION_HEADER),
+        meta if isinstance(meta, Mapping) else None,
+    )
 
 
 def _error(exc: GatewayError) -> dict[str, Any]:
@@ -107,7 +122,9 @@ def build_mcp_server(gateway: Gateway) -> MCPServer:
                 raise InvalidParamsError(
                     f"invalid request: {exc.error_count()} problem(s)"
                 ) from None
-            execution = await gateway.engine.submit(principal, request)
+            execution = await gateway.engine.submit(
+                principal, request, correlation_id=_correlation(ctx)
+            )
         except GatewayError as exc:
             return _error(exc)
         return execution.model_dump(mode="json")

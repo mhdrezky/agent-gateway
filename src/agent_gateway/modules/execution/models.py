@@ -50,6 +50,8 @@ class Execution(Record):
     params: dict[str, Any] = Field(default_factory=dict)
     params_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     idempotency_key: str | None = None
+    # An id the caller attached (SPEC §12). Absent on phase 2 records.
+    correlation_id: str | None = Field(default=None, min_length=1, max_length=200)
     status: ExecutionStatus
     decision: Decision | None = None
     approval_id: str | None = None

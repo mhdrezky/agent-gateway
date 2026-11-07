@@ -33,3 +33,5 @@ class Approval(Record):
     mode: Approver = Approver.ADMIN
     # The requesting user's ``sub``; set only when ``mode`` is ``requester``.
     requester: str | None = None
+    # Copied from the execution so approval events can be traced (SPEC §12).
+    correlation_id: str | None = Field(default=None, min_length=1, max_length=200)

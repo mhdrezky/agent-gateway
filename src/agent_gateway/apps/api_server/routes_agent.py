@@ -2,9 +2,10 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Query, Response, status
+from fastapi import APIRouter, Header, Query, Response, status
 
 from agent_gateway import __version__
+from agent_gateway.apps.api_server.correlation import resolve_correlation
 from agent_gateway.apps.api_server.deps import GatewayDep, PrincipalDep
 from agent_gateway.apps.api_server.schemas import (
     ActionInfo,
@@ -58,9 +59,15 @@ async def list_resources(
 
 @router.post("/executions")
 async def submit_execution(
-    body: ExecutionRequest, response: Response, gateway: GatewayDep, principal: PrincipalDep
+    body: ExecutionRequest,
+    response: Response,
+    gateway: GatewayDep,
+    principal: PrincipalDep,
+    x_correlation_id: Annotated[str | None, Header()] = None,
 ) -> Execution:
-    execution = await gateway.engine.submit(principal, body)
+    execution = await gateway.engine.submit(
+        principal, body, correlation_id=resolve_correlation(x_correlation_id, None)
+    )
     if execution.status is ExecutionStatus.PENDING_APPROVAL:
         response.status_code = status.HTTP_202_ACCEPTED
     return execution

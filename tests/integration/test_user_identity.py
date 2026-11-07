@@ -111,6 +111,7 @@ def test_phase_two_executions_still_load() -> None:
         "created_at": "2026-10-31T00:00:00Z",
     }
     assert Execution.model_validate(stored).user_subject is None
+    assert Execution.model_validate(stored).correlation_id is None
 
 
 async def test_mcp_tool_calls_carry_the_user(user_world: World, idp: FakeIdp) -> None:

@@ -38,7 +38,9 @@ class ExecutionStore(Protocol):
 
 
 class ExecutionEngine(Protocol):
-    async def submit(self, principal: Principal, request: ExecutionRequest) -> Execution:
+    async def submit(
+        self, principal: Principal, request: ExecutionRequest, *, correlation_id: str | None = None
+    ) -> Execution:
         """Run the full pipeline. Returns a finished, pending-approval, or denied execution."""
         ...
 

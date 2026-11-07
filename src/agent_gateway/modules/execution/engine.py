@@ -106,7 +106,9 @@ class GatewayExecutionEngine:
 
     # ---- submit -------------------------------------------------------------------------
 
-    async def submit(self, principal: Principal, request: ExecutionRequest) -> Execution:
+    async def submit(
+        self, principal: Principal, request: ExecutionRequest, *, correlation_id: str | None = None
+    ) -> Execution:
         agent_id = _require_agent(principal)
         actor = Actor(type=ActorType.AGENT, id=agent_id)
 
@@ -121,16 +123,16 @@ class GatewayExecutionEngine:
 
         registered = self._registry.get(request.action)
         if registered is None:
-            await self._reject(actor, request, "action not found")
+            await self._reject(actor, request, "action not found", correlation_id)
             raise ActionNotFoundError(f"action {request.action!r} not found")
         try:
             params = self._registry.validate_params(request.action, request.params)
         except GatewayError:
-            await self._reject(actor, request, "invalid params")
+            await self._reject(actor, request, "invalid params", correlation_id)
             raise
         resource = await self._resources.get(request.resource_id)
         if resource is None:
-            await self._reject(actor, request, "resource not found")
+            await self._reject(actor, request, "resource not found", correlation_id)
             raise ResourceNotFoundError(f"resource {request.resource_id!r} not found")
 
         normalized = params.model_dump(mode="json")
@@ -145,6 +147,7 @@ class GatewayExecutionEngine:
             params=normalized,
             params_digest=sha256_digest(normalized),
             idempotency_key=request.idempotency_key,
+            correlation_id=correlation_id,
             status=ExecutionStatus.PENDING_APPROVAL,
             decision=decision,
             created_at=self._clock.now(),
@@ -177,6 +180,7 @@ class GatewayExecutionEngine:
                 execution.params_digest,
                 mode=Approver.REQUESTER if by_requester else Approver.ADMIN,
                 requester=execution.user_subject if by_requester else None,
+                correlation_id=execution.correlation_id,
             )
             return await self._executions.update(
                 execution.id, lambda e: e.model_copy(update={"approval_id": approval.id})
@@ -597,14 +601,19 @@ class GatewayExecutionEngine:
                 return execution
         return None
 
-    async def _reject(self, actor: Actor, request: ExecutionRequest, reason: str) -> None:
+    async def _reject(
+        self, actor: Actor, request: ExecutionRequest, reason: str, correlation_id: str | None
+    ) -> None:
+        details: dict[str, Any] = {"reason": reason}
+        if correlation_id is not None:
+            details["correlation_id"] = correlation_id
         await self._audit.append(
             AuditRecord(
                 event=AuditEventType.EXECUTION_REJECTED,
                 actor=actor,
                 action=request.action[:128],
                 resource_id=request.resource_id[:64],
-                details={"reason": reason},
+                details=details,
             )
         )
 
@@ -615,6 +624,9 @@ class GatewayExecutionEngine:
         actor: Actor,
         details: dict[str, Any] | None = None,
     ) -> None:
+        payload = dict(details or {})
+        if execution.correlation_id is not None:
+            payload["correlation_id"] = execution.correlation_id
         await self._audit.append(
             AuditRecord(
                 event=event,
@@ -623,7 +635,7 @@ class GatewayExecutionEngine:
                 action=execution.action,
                 resource_id=execution.resource_id,
                 params_digest=execution.params_digest,
-                details=details or {},
+                details=payload,
             )
         )
 

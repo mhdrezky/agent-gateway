@@ -47,6 +47,7 @@ class ApprovalWorkflow:
         *,
         mode: Approver = Approver.ADMIN,
         requester: str | None = None,
+        correlation_id: str | None = None,
     ) -> Approval:
         if (mode is Approver.REQUESTER) != (requester is not None):
             raise ValueError("a requester approval needs the requester, and only it does")
@@ -59,6 +60,7 @@ class ApprovalWorkflow:
             expires_at=now + self._ttl,
             mode=mode,
             requester=requester,
+            correlation_id=correlation_id,
         )
         await self._record(AuditEventType.APPROVAL_REQUESTED, approval, SYSTEM_ACTOR)
         await self._approvals.put(approval)
@@ -190,6 +192,8 @@ class ApprovalWorkflow:
         details: dict[str, object] = {"approval_id": approval.id}
         if approval.mode is Approver.REQUESTER:
             details["mode"] = str(approval.mode)
+        if approval.correlation_id is not None:
+            details["correlation_id"] = approval.correlation_id
         if approval.reason is not None:
             details["reason"] = approval.reason
         await self._audit.append(

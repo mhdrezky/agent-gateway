@@ -14,6 +14,7 @@ class ApprovalService(Protocol):
         *,
         mode: Approver = Approver.ADMIN,
         requester: str | None = None,
+        correlation_id: str | None = None,
     ) -> Approval:
         """Create a pending approval that expires after the configured TTL.
 

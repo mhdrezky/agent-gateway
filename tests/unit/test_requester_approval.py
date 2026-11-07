@@ -96,3 +96,4 @@ def test_phase_two_records_still_load() -> None:
     )
     assert approval.mode is Approver.ADMIN
     assert approval.requester is None
+    assert approval.correlation_id is None

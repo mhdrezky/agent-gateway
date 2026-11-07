@@ -31,11 +31,13 @@ async def running(world: World) -> AsyncIterator[FastAPI]:
 
 
 @asynccontextmanager
-async def mcp_session(app: FastAPI, token: str) -> AsyncIterator[ClientSession]:
+async def mcp_session(
+    app: FastAPI, token: str, headers: dict[str, str] | None = None
+) -> AsyncIterator[ClientSession]:
     http = httpx2.AsyncClient(
         transport=httpx2.ASGITransport(app=app),
         base_url=BASE,
-        headers={"Authorization": f"Bearer {token}"},
+        headers={"Authorization": f"Bearer {token}", **(headers or {})},
     )
     async with (
         http,

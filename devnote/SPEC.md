@@ -448,13 +448,14 @@ Pola action mendukung wildcard `*` hanya di segmen terakhir.
   "error": null,
   "created_at": "...",
   "started_at": "...",
-  "finished_at": "..."
+  "finished_at": "...",
+  "correlation_id": null
 }
 ```
 
 `status`: `pending_approval` → `approved` → `running` → `succeeded` | `failed`; atau `denied` | `rejected` | `expired`.
 
-Fase 4: `user_subject` (opsional, default `null`) berisi `sub` user bila execution diminta atas nama user (§9.4). Field opsional, jadi execution fase 2 tetap terbaca tanpa migrasi.
+Fase 4: `user_subject` (opsional, default `null`) berisi `sub` user bila execution diminta atas nama user (§9.4). `correlation_id` (opsional, default `null`) adalah id yang dikirim pemanggil (§12). Keduanya opsional, jadi execution fase 2 tetap terbaca tanpa migrasi.
 
 ### 8.8 Approval (`approvals.json`)
 
@@ -669,7 +670,7 @@ SSH broker memakai `asyncssh`, wajib verifikasi `host_key_fingerprint` (tidak ad
 
 Pipeline:
 
-1. **Idempotency:** jika `idempotency_key` sudah dipakai agent yang sama dalam 24 jam, kembalikan execution yang ada.
+1. **Idempotency:** jika `idempotency_key` sudah dipakai agent yang sama dalam 24 jam, kembalikan execution yang ada, beserta `correlation_id` yang tersimpan pada percobaan pertama.
 2. **Resolve action:** lookup registry; tidak ada → `404 action_not_found` + audit `execution.rejected`.
 3. **Validasi params:** `input_model.model_validate(params)`; gagal → `422`.
 4. **Resolve resource:** tidak ada → `404`.
@@ -677,6 +678,8 @@ Pipeline:
 6. **Approval:** jika wajib, buat approval, status `pending_approval`, audit, kembalikan `202`.
 7. **Execute:** status `running` → dekripsi credential → panggil broker dengan timeout → simpan hasil → audit.
 8. Kembalikan execution (`200` jika selesai sinkron).
+
+`correlation_id` opsional. REST membacanya dari header `X-Correlation-Id`; `tools/call` (di `/mcp/actions` maupun `/mcp`) dari `_meta["agentgate/correlation_id"]`, dan dari header bila `_meta` tidak membawanya. Bila keduanya ada dan berbeda, permintaan ditolak `422` (`invalid_params`) tanpa execution. Nilainya 1–200 karakter tanpa karakter kontrol. Ia disimpan di execution dan di `details.correlation_id` pada setiap event audit execution itu (termasuk approval-nya). Ia bukan bagian dari `params_digest` dan tidak mengubah idempotensi. Tanpa id, tidak ada field baru di baris audit, sehingga rantai hash fase 2 tetap sah.
 
 Eksekusi yang sudah disetujui dijalankan sebagai background task di proses yang sama. Saat restart, execution berstatus `running` ditandai `failed` dengan error `interrupted` (tidak di-retry otomatis), sedangkan execution `approved` yang belum sempat jalan akan dijalankan.
 
@@ -782,6 +785,7 @@ Satu baris JSON per event di `var/audit/<yyyy-mm-dd>.jsonl`:
 - Entry pertama memakai `prev_hash` = 64 karakter `0`.
 - Chain bersambung lintas file harian; `head.json` menyimpan `seq` dan `hash` terakhir.
 - `params` mentah **tidak** dicatat; hanya digest. Secret tidak pernah dicatat.
+- Event milik sebuah execution menyalin `correlation_id` ke `details` bila pemanggil mengirimkannya (§12). Tidak ada field baru di entry: baris lama tetap terverifikasi.
 
 ### 14.2 Event
 
@@ -810,7 +814,7 @@ Base path: `/v1`. Semua body JSON. Header `Authorization: Bearer <token>` wajib 
 | GET | `/v1/whoami` | Identitas agent & role |
 | GET | `/v1/actions` | Action yang boleh dipakai agent ini, beserta JSON schema params |
 | GET | `/v1/resources` | Resource yang bisa dipakai agent ini (tanpa atribut sensitif) |
-| POST | `/v1/executions` | Submit eksekusi |
+| POST | `/v1/executions` | Submit eksekusi. Header `X-Correlation-Id` opsional (§12) |
 | GET | `/v1/executions/{id}` | Status & hasil (hanya milik agent sendiri) |
 | GET | `/v1/executions` | Daftar eksekusi agent sendiri (paginasi `?cursor=&limit=`) |
 | GET | `/v1/approvals/mine` | Approval `requester` milik user (`?status=`), wajib `X-User-Token` (§13b) |
@@ -926,7 +930,7 @@ Sejak 2026-11-01 gateway melayani MCP langsung di `/mcp` (`apps/api_server/mcp_h
 Untuk aplikasi seperti agentgate yang menyerahkan tool langsung ke model (`apps/api_server/mcp_actions.py`). Transport, autentikasi, mode stateless, dan proteksi DNS rebinding sama dengan `/mcp`; bedanya ada di bentuk tool:
 
 - `tools/list`: satu tool per action yang tercakup role pemanggil (`ExecutionEngine.visible_actions`), nama = id action dengan `.` → `_` (`sql.query` → `sql_query`, pola `^[a-zA-Z0-9_-]{1,64}$`). `inputSchema` = schema params action ditambah `resource_id` wajib dengan `enum` resource yang terlihat oleh pemanggil dan bertipe sama dengan action. Action tanpa resource yang bisa ditarget tidak dicantumkan. Daftar dihitung per request, jadi selalu sesuai role dan policy saat itu.
-- `tools/call`: memanggil `ExecutionEngine.submit` (P6). Argumen selain `resource_id` menjadi `params`. `structuredContent` = `ToolOutcome` `{status, execution_id, result, summary, error}`: `succeeded` → `ok` (`result` = `data`), `pending_approval` → `pending` (`summary` menyebut action dan resource yang menunggu), `denied` → `denied`, lainnya → `error`. `isError` benar untuk `denied` dan `error`. Error gateway juga menjadi `ToolOutcome` (`denied` untuk `action_not_allowed`, selain itu `error`), dengan pesan aman tanpa secret.
+- `tools/call`: memanggil `ExecutionEngine.submit` (P6). Argumen selain `resource_id` menjadi `params`. `_meta["agentgate/correlation_id"]` (atau header `X-Correlation-Id`) menjadi `correlation_id` execution (§12). `structuredContent` = `ToolOutcome` `{status, execution_id, result, summary, error}`: `succeeded` → `ok` (`result` = `data`), `pending_approval` → `pending` (`summary` menyebut action dan resource yang menunggu), `denied` → `denied`, lainnya → `error`. `isError` benar untuk `denied` dan `error`. Error gateway juga menjadi `ToolOutcome` (`denied` untuk `action_not_allowed`, selain itu `error`), dengan pesan aman tanpa secret.
 - Nama tool yang tidak dikenal → `ToolOutcome` `error`, tanpa eksekusi.
 - Anotasi: `readOnlyHint` benar bila action `read_only`; `destructiveHint` benar untuk setiap tulis (kontrak §4.1 memperlakukan semua tulis sebagai destruktif). Keduanya sifat action, tidak tergantung policy.
 - `_meta["agentgate/write"]` benar bila panggilan action itu oleh pemanggil ini bisa ditahan untuk konfirmasi user (§13b) pada salah satu resource di `enum`-nya: keputusan `allow` dengan `approver=requester`, sesudah jendela elevation diperhitungkan. Tanpa user nilainya `false` (panggilan seperti itu ditolak, bukan ditahan). Approval admin atau tanpa approval juga `false`.
@@ -1157,7 +1161,7 @@ Slice, masing-masing di branch sendiri, dengan SPEC diubah lebih dulu:
 | 5 | Tool profile MCP | Melengkapi `/mcp/actions` dari slice 1: anotasi `readOnlyHint` / `destructiveHint`, `_meta["agentgate/write"]` (§16; daftar tool sudah mengikuti scope user ∩ agent sejak slice 3) |
 | 6 | Broker `sql` | Port SQL gate agentgate (satu `SELECT`, tabel yang diizinkan, row cap, `limited`) beserta tesnya. Postgres dulu, T-SQL menyusul |
 | 7 | Broker `smtp` | Port konektor mail agentgate (domain yang diizinkan, STARTTLS), action `mail.send` risk `medium` approval `requester`. Mailpit di compose uji |
-| 8 | Correlation id | Dari `X-Correlation-Id` / `_meta` ke execution dan audit |
+| 8 | Correlation id | Dari `X-Correlation-Id` / `_meta` ke execution dan audit (§12) |
 | 9 | `agw apply <seed.yaml>` | Onboarding deklaratif dan idempoten (agent, role, policy, resource, user, referensi credential) |
 | 10 | Endpoint model | Resource `model`, `GET /v1/models`, `POST /v1/models/{name}/chat` (non-streaming), mengembalikan `model_id` persis |
 
@@ -1188,7 +1192,7 @@ Sumber kebenaran kontrak ada di repo agentgate: `app/docs/gateway-contract.md` (
 | Bagian | Isi |
 | ------ | --- |
 | Versi | `GET /v1/contract` tanpa auth → `{"versions": ["agentgate-gateway/1"]}` |
-| Identitas | `Authorization: Bearer <token agent>` selalu; `X-User-Token: <access token OIDC user>` bila panggilan untuk user; `X-Correlation-Id` opsional. Token user palsu atau kedaluwarsa → `401`; user valid yang tidak ada di `users.json` → scope kosong |
+| Identitas | `Authorization: Bearer <token agent>` selalu; `X-User-Token: <access token OIDC user>` bila panggilan untuk user; `X-Correlation-Id` opsional, disimpan di execution dan audit (§12). Token user palsu atau kedaluwarsa → `401`; user valid yang tidak ada di `users.json` → scope kosong |
 | Tool (MCP) | `/mcp/actions`, Streamable HTTP. `tools/list`: satu tool per action yang boleh dipakai pemanggil, dengan nama `^[a-zA-Z0-9_-]{1,64}$` (titik → garis bawah) dan `resource_id` enum di `inputSchema`. `tools/call` → `structuredContent` = `ToolOutcome` (`ok`, `pending`, `denied`, `error`), dari status execution: `succeeded` → `ok`, `pending_approval` → `pending`, `denied` → `denied`, lainnya → `error` |
 | Model | `GET /v1/models` → `[{name, model_id}]`; `POST /v1/models/{name}/chat` dengan `ChatIn` → `ChatOut` (selalu ada `model_id` bila `ok`). Nama yang tidak boleh dipakai → `status: denied`; nama tak dikenal → `404 model_not_found` |
 | Approval user | `GET /v1/approvals/mine?status=` dan `POST /v1/approvals/{id}/decide` `{"decision": "confirm"\|"reject"}`, wajib `X-User-Token` (tanpa itu `401`). Approval orang lain atau mode admin → `404 approval_not_found`; sudah diputuskan → `409 approval_not_pending`. **Tidak pernah tersedia sebagai tool MCP** |
