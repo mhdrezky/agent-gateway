@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict
 
 from agent_gateway.apps.api_server.app import create_app
 from agent_gateway.brokers.base import ActionContext, ActionResult
-from agent_gateway.config import RateLimitSettings, Settings
+from agent_gateway.config import RateLimitSettings, Settings, UserSettings
 from agent_gateway.modules.action_registry.models import (
     ActionDefinition,
     RegisteredAction,
@@ -29,13 +29,15 @@ from agent_gateway.modules.authorization.models import (
 )
 from agent_gateway.modules.credentials.models import CredentialType, SecretPayload
 from agent_gateway.modules.crypto.keyring import generate_master_key
-from agent_gateway.modules.identity.models import TokenKind
+from agent_gateway.modules.identity.models import TokenKind, UserMatch
 from agent_gateway.modules.identity.users import JwksSource
 from agent_gateway.modules.resources.models import ResourceType
 from agent_gateway.runtime import Gateway, build_gateway
 from tests.fakes.brokers import FakeBroker
+from tests.fakes.oidc import FakeIdp, oidc_settings
 
 SECRET = "s3cr3t-api-token-value"
+USER_HEADER = "x-user-token"
 
 
 class NoParams(BaseModel):
@@ -191,6 +193,34 @@ async def world(settings: Settings) -> AsyncIterator[World]:
 @pytest.fixture
 async def approval_world(settings: Settings) -> AsyncIterator[World]:
     w = await build_world(settings, approval=ApprovalMode.ALWAYS)
+    yield w
+    await w.api.aclose()
+    await w.gateway.stop()
+
+
+@pytest.fixture
+def idp() -> FakeIdp:
+    return FakeIdp()
+
+
+@pytest.fixture
+async def user_world(settings: Settings, idp: FakeIdp) -> AsyncIterator[World]:
+    """``world`` plus OIDC users: group ``staff`` gets role ``staff`` (``fake.*`` on the
+    endpoint), so a staff user may run ``fake.echo`` but not ``test.*``.
+    """
+    configured = settings.model_copy(update={"users": UserSettings(oidc=oidc_settings())})
+    w = await build_world(configured, approval=ApprovalMode.NEVER, jwks=idp)
+    admin = w.gateway.admin
+    await admin.add_user(CLI_PRINCIPAL, UserMatch(group="staff"), ["staff"])
+    await admin.put_role(CLI_PRINCIPAL, Role(id="staff", actions=("fake.*",)))
+    await admin.create_policy(
+        CLI_PRINCIPAL,
+        subject=PolicySubject(user_role="staff"),
+        actions=["fake.*"],
+        resources=ResourceSelector(ids=(w.resource_id,)),
+        effect=PolicyEffect.ALLOW,
+        approval=ApprovalMode.NEVER,
+    )
     yield w
     await w.api.aclose()
     await w.gateway.stop()

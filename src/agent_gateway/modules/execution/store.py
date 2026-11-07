@@ -63,12 +63,19 @@ class FileExecutionStore:
         )
 
     async def page(
-        self, *, agent_id: str | None, before: str | None, limit: int
+        self,
+        *,
+        agent_id: str | None,
+        before: str | None,
+        limit: int,
+        user_subject: str | None = None,
     ) -> list[Execution]:
         def collect() -> list[Execution]:
             items: list[Execution] = []
             for execution in self._scan(before=before):
-                if agent_id is None or execution.agent_id == agent_id:
+                if (agent_id is None or execution.agent_id == agent_id) and (
+                    user_subject is None or execution.user_subject == user_subject
+                ):
                     items.append(execution)
                     if len(items) >= limit:
                         break

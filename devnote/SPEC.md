@@ -387,7 +387,7 @@ Pola action mendukung wildcard `*` hanya di segmen terakhir.
 }
 ```
 
-- `subject`: `agent_id` atau `role`.
+- `subject`: tepat satu dari `agent_id`, `role` (role agent), `user` (klaim `sub` user, fase 4), atau `user_role` (role user dari `users.json`, fase 4). Subjek `user` dan `user_role` hanya berlaku untuk panggilan dengan `X-User-Token` (§10.3); policy lama tidak berubah artinya.
 - `effect`: `allow` | `deny`.
 - `approval`: `never` | `always` | `by_risk` (default: ikut `risk` action).
 - Resource cocok jika id ada di `ids` **atau** semua tag di `tags` dimiliki resource.
@@ -557,6 +557,20 @@ class Decision:
 6. `resource.type` harus cocok dengan `action_def.resource_type`, jika tidak → `deny`.
 
 Keputusan bersifat murni (tanpa I/O) agar mudah di-test.
+
+### 10.3 Delegasi: agent atas nama user (fase 4)
+
+Bila principal membawa user (§9.4), scope = **user ∩ agent**. Langkah 1–6 di atas dijalankan untuk sisi agent dengan policy bersubjek `agent_id`/`role` saja, lalu sisi user ikut dinilai:
+
+1. Role user (dari `users.json`) harus mencakup action → bila tidak, `deny` (`"action not in user roles"`). User tanpa role berarti semua action ditolak.
+2. Policy sisi user = policy bersubjek `user` (sama dengan `sub`) atau `user_role` (salah satu role user), belum expired, cocok action dan resource.
+3. `deny` di sisi mana pun → `deny`. Deny selalu menang.
+4. Sisi user tanpa `allow` yang cocok → `deny` (`"no matching allow policy for user"`).
+5. Approval = yang paling ketat dari semua `allow` yang cocok di kedua sisi.
+
+Tanpa user, policy bersubjek `user`/`user_role` tidak pernah cocok, sehingga keputusan sama persis dengan fase 2 (D14).
+
+Visibilitas mengikuti scope yang sama: `GET /v1/actions` dan `tools/list` di `/mcp/actions` hanya memuat action yang tercakup role agent dan role user; `GET /v1/resources` hanya resource yang dipilih `allow` di kedua sisi. Execution yang diminta atas nama user hanya terlihat oleh user itu (`get`/`list` dengan `X-User-Token` difilter `user_subject`); panggilan agent saja tetap melihat semua execution agent itu.
 
 ## 11. Action Registry & Broker interface
 
@@ -1098,9 +1112,9 @@ Slice, masing-masing di branch sendiri, dengan SPEC diubah lebih dulu:
 | - | ----- | --- |
 | 1 | MCP Streamable HTTP | Endpoint `/mcp/actions` dengan bearer token agent, di samping `/mcp` dan stdio: satu tool per action, `resource_id` enum, hasil `ToolOutcome` (§16). Plus `GET /v1/contract` |
 | 2 | Identitas user | Verifikasi `X-User-Token` (OIDC: JWKS, `iss`, `aud`, `exp`), `users.json` (subject/grup → role), principal *user atas nama agent*, CLI `agw user` (§8.9, §9.4) |
-| 3 | Otorisasi delegasi | Scope = role user ∩ role agent; policy subject `user` dan `user_role` |
+| 3 | Otorisasi delegasi | Scope = role user ∩ role agent; policy subject `user` dan `user_role`; visibilitas action, resource, dan execution ikut scope (§10.3) |
 | 4 | Approval `requester` | Mode approval baru yang diputuskan oleh user peminta; REST `GET /v1/approvals/mine`, `POST /v1/approvals/{id}/decide` |
-| 5 | Tool profile MCP | Melengkapi `/mcp/actions` dari slice 1: anotasi `readOnlyHint` / `destructiveHint`, `_meta["agentgate/write"]`, daftar tool mengikuti scope user ∩ agent |
+| 5 | Tool profile MCP | Melengkapi `/mcp/actions` dari slice 1: anotasi `readOnlyHint` / `destructiveHint`, `_meta["agentgate/write"]` (daftar tool sudah mengikuti scope user ∩ agent sejak slice 3) |
 | 6 | Broker `sql` | Port SQL gate agentgate (satu `SELECT`, tabel yang diizinkan, row cap, `limited`) beserta tesnya. Postgres dulu, T-SQL menyusul |
 | 7 | Broker `smtp` | Port konektor mail agentgate (domain yang diizinkan, STARTTLS), action `mail.send` risk `medium` approval `requester`. Mailpit di compose uji |
 | 8 | Correlation id | Dari `X-Correlation-Id` / `_meta` ke execution dan audit |

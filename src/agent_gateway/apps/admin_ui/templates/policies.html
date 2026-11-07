@@ -10,7 +10,7 @@
     {% for p in policies %}
     <tr>
       <td><code>{{ p.id }}</code>{% if p.expires_at %}<br><span class="muted">expires {{ p.expires_at | ts }}</span>{% endif %}</td>
-      <td>{% if p.subject.role %}role <code>{{ p.subject.role }}</code>{% else %}agent {{ name(names, p.subject.agent_id) }}{% endif %}</td>
+      <td>{% if p.subject.role %}role <code>{{ p.subject.role }}</code>{% elif p.subject.user_role %}user role <code>{{ p.subject.user_role }}</code>{% elif p.subject.user %}user <code>{{ p.subject.user }}</code>{% else %}agent {{ name(names, p.subject.agent_id) }}{% endif %}</td>
       <td>{% for a in p.actions %}<code>{{ a }}</code><br>{% endfor %}</td>
       <td>
         {% for rid in p.resources.ids %}{{ name(names, rid) }}<br>{% endfor %}
@@ -38,7 +38,9 @@
       <select name="subject" required>
         {% for r in roles %}<option value="role:{{ r }}">role {{ r }}</option>{% endfor %}
         {% for a in agents %}<option value="agent:{{ a.id }}">agent {{ a.name }}</option>{% endfor %}
+        {% for r in roles %}<option value="user_role:{{ r }}">user role {{ r }}</option>{% endfor %}
       </select>
+      <span>User roles apply only when an app calls on behalf of a signed-in user.</span>
     </label>
     <label>Actions <textarea name="actions" required placeholder="ssh.*&#10;ssh.sudo"></textarea><span>One per line. Privileged actions must be named exactly.</span></label>
     <label>Resources

@@ -29,7 +29,12 @@ from agent_gateway.modules.approvals.models import Approval, ApprovalStatus
 from agent_gateway.modules.approvals.ports import ApprovalService
 from agent_gateway.modules.audit.models import Actor, ActorType, AuditEventType, AuditRecord
 from agent_gateway.modules.audit.ports import AuditLog
-from agent_gateway.modules.authorization.engine import grants, selector_matches
+from agent_gateway.modules.authorization.engine import (
+    agent_subject_matches,
+    roles_grant,
+    selector_matches,
+    user_subject_matches,
+)
 from agent_gateway.modules.authorization.models import (
     AuthorizationRequest,
     Decision,
@@ -194,33 +199,43 @@ class GatewayExecutionEngine:
     ) -> tuple[list[Execution], str | None]:
         limit = max(1, min(limit, 200))
         agent_id = None if principal.is_admin else _require_agent(principal)
-        items = await self._executions.page(agent_id=agent_id, before=cursor, limit=limit + 1)
+        items = await self._executions.page(
+            agent_id=agent_id,
+            user_subject=principal.user.subject if principal.user else None,
+            before=cursor,
+            limit=limit + 1,
+        )
         next_cursor = items[limit - 1].id if len(items) > limit else None
         return items[:limit], next_cursor
 
     async def visible_actions(self, principal: Principal) -> list[RegisteredAction]:
-        """Actions covered by the caller's roles. Policies still decide per resource."""
-        roles = [r for r in await self._roles.all() if r.id in principal.roles]
+        """Actions covered by the caller's roles (and its user's, SPEC §10.3). Policies still
+        decide per resource."""
+        roles = await self._roles.all()
+        user = principal.user
         return [
             action
             for action in self._registry.all()
-            if any(grants(r.actions, action.definition) for r in roles)
+            if roles_grant(roles, principal.roles, action.definition)
+            and (user is None or roles_grant(roles, user.roles, action.definition))
         ]
 
     async def visible_resources(self, principal: Principal) -> list[Resource]:
-        """Resources selected by at least one live allow policy for the caller."""
+        """Resources selected by a live allow policy for the caller; with a user, by one on
+        each side."""
         now = self._clock.now()
-        policies = [
+        live = [
             p
             for p in await self._policies.all()
-            if p.effect is PolicyEffect.ALLOW
-            and (p.expires_at is None or p.expires_at > now)
-            and _subject_matches(p, principal)
+            if p.effect is PolicyEffect.ALLOW and (p.expires_at is None or p.expires_at > now)
         ]
+        agent_side = [p for p in live if agent_subject_matches(p, principal)]
+        user_side = [p for p in live if user_subject_matches(p, principal)]
         return [
             r
             for r in await self._resources.list()
-            if any(selector_matches(p.resources, r) for p in policies)
+            if any(selector_matches(p.resources, r) for p in agent_side)
+            and (principal.user is None or any(selector_matches(p.resources, r) for p in user_side))
         ]
 
     # ---- approvals and lifecycle ----------------------------------------------------------
@@ -486,11 +501,9 @@ def _require_agent(principal: Principal) -> str:
 
 
 def _visible(principal: Principal, execution: Execution) -> bool:
-    return principal.is_admin or execution.agent_id == principal.agent_id
-
-
-def _subject_matches(policy: Policy, principal: Principal) -> bool:
-    subject = policy.subject
-    if subject.agent_id is not None:
-        return subject.agent_id == principal.agent_id
-    return subject.role in principal.roles
+    if principal.is_admin:
+        return True
+    if execution.agent_id != principal.agent_id:
+        return False
+    # A user sees only what was asked on their behalf; the agent alone sees all of its own.
+    return principal.user is None or execution.user_subject == principal.user.subject

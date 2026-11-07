@@ -26,14 +26,26 @@ class Role(Record):
 
 
 class PolicySubject(StrictModel):
+    """Who a policy applies to. ``user`` and ``user_role`` only match calls made on behalf
+    of a user (``X-User-Token``, SPEC §10.3); ``agent_id`` and ``role`` match the agent.
+    """
+
     agent_id: str | None = None
     role: str | None = None
+    # The user's ``sub`` claim.
+    user: str | None = Field(default=None, min_length=1, max_length=255)
+    user_role: str | None = None
 
     @model_validator(mode="after")
     def _exactly_one(self) -> Self:
-        if (self.agent_id is None) == (self.role is None):
-            raise ValueError("subject needs exactly one of agent_id or role")
+        given = [v for v in (self.agent_id, self.role, self.user, self.user_role) if v is not None]
+        if len(given) != 1:
+            raise ValueError("subject needs exactly one of agent_id, role, user, or user_role")
         return self
+
+    @property
+    def is_user_side(self) -> bool:
+        return self.user is not None or self.user_role is not None
 
 
 class ResourceSelector(StrictModel):

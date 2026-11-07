@@ -1,41 +1,18 @@
 """An agent calling on behalf of a user (``X-User-Token``) over REST and MCP (SPEC §9.4)."""
 
-from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
-import pytest
 
-from agent_gateway.config import Settings, UserSettings
-from agent_gateway.modules.administration.service import CLI_PRINCIPAL
-from agent_gateway.modules.authorization.models import ApprovalMode
 from agent_gateway.modules.execution.models import Execution
-from agent_gateway.modules.identity.models import UserMatch
 from agent_gateway.modules.identity.users import USER_AUTH_FAILED_MESSAGE
-from tests.fakes.oidc import FakeIdp, oidc_settings
+from tests.fakes.oidc import FakeIdp
 from tests.integration.test_mcp_http import BASE, running
-from tests.world import World, build_world
-
-USER = "x-user-token"
-
-
-@pytest.fixture
-def idp() -> FakeIdp:
-    return FakeIdp()
-
-
-@pytest.fixture
-async def user_world(settings: Settings, idp: FakeIdp) -> AsyncIterator[World]:
-    configured = settings.model_copy(update={"users": UserSettings(oidc=oidc_settings())})
-    w = await build_world(configured, approval=ApprovalMode.NEVER, jwks=idp)
-    await w.gateway.admin.add_user(CLI_PRINCIPAL, UserMatch(group="staff"), ["staff"])
-    yield w
-    await w.api.aclose()
-    await w.gateway.stop()
+from tests.world import USER_HEADER, World
 
 
 def as_user(world: World, token: str) -> dict[str, str]:
-    return {**world.agent(), USER: token}
+    return {**world.agent(), USER_HEADER: token}
 
 
 async def audit_events(world: World, event: str) -> list[dict[str, Any]]:
@@ -75,10 +52,10 @@ async def test_a_bad_user_token_is_401_and_audited(user_world: World, idp: FakeI
 
 async def test_a_user_token_needs_an_agent_token(user_world: World, idp: FakeIdp) -> None:
     admin = await user_world.api.get(
-        "/v1/whoami", headers={**user_world.admin(), USER: idp.token()}
+        "/v1/whoami", headers={**user_world.admin(), USER_HEADER: idp.token()}
     )
     assert admin.status_code == 403
-    alone = await user_world.api.get("/v1/whoami", headers={USER: idp.token()})
+    alone = await user_world.api.get("/v1/whoami", headers={USER_HEADER: idp.token()})
     assert alone.status_code == 401
 
 
@@ -113,9 +90,10 @@ async def test_executions_record_the_user(user_world: World, idp: FakeIdp) -> No
 
 
 async def test_idempotency_keys_are_per_user(user_world: World, idp: FakeIdp) -> None:
-    first = await submit(user_world, as_user(user_world, idp.token("u-1")), key="k1")
-    again = await submit(user_world, as_user(user_world, idp.token("u-1")), key="k1")
-    other = await submit(user_world, as_user(user_world, idp.token("u-2")), key="k1")
+    staff = ["staff"]
+    first = await submit(user_world, as_user(user_world, idp.token("u-1", staff)), key="k1")
+    again = await submit(user_world, as_user(user_world, idp.token("u-1", staff)), key="k1")
+    other = await submit(user_world, as_user(user_world, idp.token("u-2", staff)), key="k1")
     assert again.id == first.id
     assert other.id != first.id
     assert other.user_subject == "u-2"

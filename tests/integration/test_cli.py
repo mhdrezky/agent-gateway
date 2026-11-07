@@ -164,3 +164,14 @@ def test_users_map_oidc_claims_to_roles(env: dict[str, str]) -> None:
     deleted = runner.invoke(app, ["user", "delete", added["id"]], env=env)
     assert deleted.output.strip() == "deleted"
     assert len(json.loads(runner.invoke(app, ["user", "list"], env=env).output)) == 1
+
+
+def test_policies_for_users(env: dict[str, str]) -> None:
+    base = ["policy", "add", "-a", "fake.echo", "--resource", "res_x"]
+    by_role = runner.invoke(app, [*base, "--user-role", "staff"], env=env)
+    assert by_role.exit_code == 0, by_role.output
+    assert json.loads(by_role.output)["subject"]["user_role"] == "staff"
+    by_user = runner.invoke(app, [*base, "--user", "8f2c"], env=env)
+    assert json.loads(by_user.output)["subject"]["user"] == "8f2c"
+    both = runner.invoke(app, [*base, "--role", "a", "--user-role", "b"], env=env)
+    assert both.exit_code == 1

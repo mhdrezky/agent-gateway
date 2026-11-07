@@ -24,9 +24,15 @@ class ExecutionStore(Protocol):
         ...
 
     async def page(
-        self, *, agent_id: str | None, before: str | None, limit: int
+        self,
+        *,
+        agent_id: str | None,
+        before: str | None,
+        limit: int,
+        user_subject: str | None = None,
     ) -> list[Execution]:
-        """Newest first, optionally only one agent's, strictly older than id ``before``."""
+        """Newest first, optionally only one agent's (and one user's), strictly older than id
+        ``before``."""
         ...
 
 

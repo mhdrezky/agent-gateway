@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import typer
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from agent_gateway.common.envfile import ADMIN_TOKEN_VAR, DEFAULT_ENV_FILE, save_env_var
 from agent_gateway.common.errors import GatewayError, ResourceNotFoundError
@@ -414,14 +414,24 @@ def role_list(config: ConfigOption = None) -> None:
 def policy_add(
     action: Annotated[list[str], typer.Option("--action", "-a")],
     agent: Annotated[str | None, typer.Option(help="Subject agent id.")] = None,
-    role: Annotated[str | None, typer.Option(help="Subject role.")] = None,
+    role: Annotated[str | None, typer.Option(help="Subject role (of agents).")] = None,
+    user: Annotated[str | None, typer.Option(help="Subject user (OIDC sub claim).")] = None,
+    user_role: Annotated[str | None, typer.Option(help="Subject role of users.")] = None,
     resource: Annotated[list[str] | None, typer.Option(help="Resource id.")] = None,
     tag: Annotated[list[str] | None, typer.Option(help="Resource tag (all must match).")] = None,
     effect: PolicyEffect = PolicyEffect.ALLOW,
     approval: ApprovalMode = ApprovalMode.BY_RISK,
     config: ConfigOption = None,
 ) -> None:
-    subject = PolicySubject(agent_id=agent, role=role)
+    try:
+        subject = PolicySubject(agent_id=agent, role=role, user=user, user_role=user_role)
+    except ValidationError:
+        typer.secho(
+            "error: give exactly one of --agent, --role, --user, or --user-role",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1) from None
     selector = ResourceSelector(ids=tuple(resource or ()), tags=tuple(tag or ()))
     _print(
         _run(

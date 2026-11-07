@@ -667,7 +667,12 @@ async def create_policy(request: Request, session: SessionDep) -> Response:
     subject_value = _text(form, "subject")
     kind, _, value = subject_value.partition(":")
     try:
-        subject = PolicySubject(agent_id=value) if kind == "agent" else PolicySubject(role=value)
+        if kind == "agent":
+            subject = PolicySubject(agent_id=value)
+        elif kind == "user_role":
+            subject = PolicySubject(user_role=value)
+        else:
+            subject = PolicySubject(role=value)
         selector = ResourceSelector(
             ids=tuple(v for v in form.getlist("resources") if isinstance(v, str) and v),
             tags=tuple(_lines(_text(form, "tags"))),
