@@ -664,6 +664,102 @@ Dengan policy `by_risk` (default), setiap `ssh.sudo` menunggu approval karena ri
 
 SSH broker memakai `asyncssh`, wajib verifikasi `host_key_fingerprint` (tidak ada auto-accept). Koneksi hanya meminta algoritma `host_key_algorithm` (default `ssh-ed25519`), karena server OpenSSH punya beberapa host key dan tanpa batasan ini asyncssh menegosiasikan RSA sehingga fingerprint ed25519 tidak pernah cocok (ditemukan saat uji e2e). Docker broker memakai Docker Engine API; hanya container dengan label `agw.managed=true` atau di allowlist resource yang boleh disentuh.
 
+### 11.4 Broker `sql` (fase 4, slice 6)
+
+Port SQL gate "doorman" agentgate. Agent mengirim teks SQL bebas, tetapi teks itu tidak pernah sampai ke database sebelum lolos gate (parse dengan `sqlglot`, dialek PostgreSQL). Database-nya adalah resource, bukan parameter. Broker aktif hanya jika `brokers.sql.enabled: true` (§17). Engine saat ini hanya `postgres`; T-SQL (SQL Server) menyusul di langkah berikutnya dengan dialek gate dan driver sendiri.
+
+| Action id | Broker | Risk | Keterangan |
+| --------- | ------ | ---- | ---------- |
+| `sql.query` | sql | low, read-only | Satu `SELECT` ke tabel di `allowed_tables`, hasil dibatasi `row_cap` baris |
+
+Parameter (`extra="forbid"`):
+
+| Field | Tipe | Aturan |
+| ----- | ---- | ------ |
+| `sql` | string | 1–20000 karakter; satu statement baca |
+
+Atribut resource `sql_database` (`extra="forbid"`):
+
+| Field | Default | Aturan |
+| ----- | ------- | ------ |
+| `engine` | `postgres` | hanya `postgres` untuk sekarang |
+| `host` | – | hostname atau IP, regex ketat |
+| `port` | `5432` | 1–65535 |
+| `dbname` | – | `^[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}$` |
+| `username` | – | login database, `^[A-Za-z_][A-Za-z0-9_.@-]{0,62}$` |
+| `schema_name` | `public` | identifier huruf kecil; semua tabel di-pin ke schema ini |
+| `allowed_tables` | – | minimal satu nama tabel huruf kecil tanpa schema |
+| `row_cap` | `200` | 1–10000 baris per panggilan |
+| `statement_timeout_ms` | `15000` | 100–50000 (di bawah timeout action 60 detik) |
+| `connect_timeout_seconds` | `5` | 1–10 |
+| `sslmode` | `prefer` | nilai libpq: `disable`, `allow`, `prefer`, `require`, `verify-ca`, `verify-full` |
+
+```json
+{
+  "id": "res_salesdb",
+  "type": "sql_database",
+  "name": "sales-db",
+  "attributes": {
+    "engine": "postgres",
+    "host": "db.internal",
+    "port": 5432,
+    "dbname": "sales",
+    "username": "agw_reader",
+    "schema_name": "sample",
+    "allowed_tables": ["purchase_order", "purchase_order_line", "product"],
+    "row_cap": 200,
+    "statement_timeout_ms": 15000
+  },
+  "credential_id": "cred_..."
+}
+```
+
+Credential: tipe `basic_auth`, nilainya adalah password login `username` (field credential lain diabaikan). Password diambil dari credential saat panggilan, tidak pernah disimpan di atribut, dan di-redact jika muncul di hasil. Login database sebaiknya juga hanya punya hak `SELECT`; gate adalah dinding pertama, bukan satu-satunya.
+
+Aturan gate (urut, berhenti di pelanggaran pertama):
+
+1. Tepat satu statement, dan statement itu query baca (`SELECT` atau set operation seperti `UNION`).
+2. Tidak ada node tulis, DDL, command, atau `SELECT INTO` di mana pun, termasuk subquery dan CTE (`INSERT`, `UPDATE`, `DELETE`, `MERGE`, `DROP`, `CREATE`, `ALTER`, `TRUNCATE`, `COPY`, `SET`, `LOCK`, `GRANT`, transaksi, dll.).
+3. Tidak ada fungsi yang membaca file, menjangkau server lain, tidur, atau mengubah state server (`pg_read_file`, `lo_import`, `dblink`, `pg_sleep`, `set_config`, `pg_terminate_backend`, `query_to_xml`, dll.).
+4. Setiap tabel nyata (bukan nama CTE) ada di `allowed_tables`, tanpa referensi lintas database, dan schema-nya kosong atau sama dengan `schema_name`. Tabel lalu ditulis ulang menjadi `<schema_name>.<tabel>` agar resolusi tidak bisa dibelokkan lewat `search_path`.
+5. Query dibungkus `SELECT * FROM (<query>) AS q LIMIT row_cap + 1`. Baris ekstra hanya menandai bahwa masih ada data; ia dibuang sebelum hasil dikembalikan.
+
+Koneksi: satu sesi pendek per panggilan (psycopg) dengan `default_transaction_read_only=on`, `statement_timeout=<statement_timeout_ms>`, dan `connect_timeout`, transaksi `READ ONLY`. Query berjalan di worker thread; timeout action (60 detik) tetap membungkus semuanya.
+
+Hasil (`ActionResult.data`):
+
+```json
+{"columns": ["doc_no", "status"], "rows": [["PO-1", "open"]], "row_count": 1, "limited": false}
+```
+
+- `rows` berupa list per baris dengan urutan `columns` (nama kolom boleh kembar, mis. `a.id, b.id`).
+- `limited: true` berarti ada lebih dari `row_cap` baris; hasilnya parsial dan agent sebaiknya menyebutnya atau mengagregasi di SQL.
+- Nilai dibuat aman untuk JSON: `Decimal` → int bila bulat, selain itu float; tanggal/waktu → ISO 8601; UUID dan interval → string; `bytea` → hex `\x...`; float non-finite → string; `json`/`jsonb` dan array tetap struktur JSON.
+- Batas output (`execution.output_limit_bytes`) berlaku: jika JSON hasil melebihi batas, baris dibuang dari akhir, `row_count` mengikuti baris yang tersisa, dan `ActionResult.truncated: true`.
+
+Pesan error (`ActionResult(ok=False, error=...)`, tanpa stack, secret, atau DSN):
+
+| Kondisi | Pesan |
+| ------- | ----- |
+| SQL tidak bisa di-parse | `could not parse SQL (<jenis error parser>)` |
+| SQL kosong | `empty query` |
+| Lebih dari satu statement | `only a single statement is allowed` |
+| Bukan query baca / ada node terlarang | `only read-only SELECT queries are allowed` |
+| Fungsi terlarang | `function '<nama>' is not allowed` |
+| Ekspresi tabel tak didukung | `unsupported table expression` |
+| Referensi lintas database | `cross-database references are not allowed` |
+| Schema lain | `schema '<schema>' is not allowed` |
+| Tabel di luar allowlist | `table 'x' not in your allowed set. Tables you can query: ... Use only these — do not query, join, or reference any other table.` (semua tabel terlarang disebut sekaligus, daftar dibatasi 60 nama lalu `(+N more)`) |
+| Tidak ada tabel | `query references no allowed tables` |
+| Resource salah tipe / atribut invalid | `resource is not a sql_database` / `sql_database resource attributes are invalid` |
+| Credential tidak ada atau bukan `basic_auth` | `sql_database resource needs a basic_auth credential` |
+| Gagal konek atau login | `could not connect to the database` (detail hanya di log server) |
+| `statement_timeout` terlewati | `query canceled: statement timeout of <N> ms exceeded` |
+| Error lain dari database | `database error <SQLSTATE>: <pesan utama PostgreSQL>` |
+| Timeout action / error tak terduga | `sql.query timed out` / `sql.query failed` |
+
+Untuk tabel di luar allowlist, pesan menyebut daftar tabel yang boleh dipakai: daftar itu adalah scope pemanggil sendiri, jadi tidak membocorkan apa pun; pelanggaran keamanan lain (schema, katalog sistem) tidak menyebutnya.
+
 ## 12. Execution engine
 
 `execution.submit(agent, action_id, resource_id, params, idempotency_key) -> Execution`
@@ -989,6 +1085,8 @@ brokers:
   docker:
     enabled: false        # mount Docker socket = akses root ke host; aktifkan secara sadar
     socket: unix:///var/run/docker.sock
+  sql:
+    enabled: false        # broker sql (§11.4): action sql.query ke resource sql_database
 users:
   oidc:                   # opsional; tanpa ini X-User-Token selalu ditolak (§9.4)
     issuer: https://idp.example.com/realms/company   # nilai klaim iss yang diharapkan
@@ -1040,7 +1138,7 @@ secrets:
 | ------- | ----- | ----- |
 | Unit | storage, crypto, policy engine, registry, audit hash | pytest, hypothesis |
 | Integration | REST API end-to-end dengan broker palsu | pytest, httpx `ASGITransport` |
-| Broker | SSH broker ke container `openssh-server`, Docker broker ke Docker lokal | pytest marker `@broker` |
+| Broker | SSH broker ke container `openssh-server`, Docker broker ke Docker lokal, SQL broker ke container Postgres | pytest marker `@broker` |
 | Security | test per prinsip P1–P7 | pytest |
 
 Test wajib:
