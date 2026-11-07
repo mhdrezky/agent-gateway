@@ -59,8 +59,13 @@ class DockerBrokerSettings(_Section):
     socket: str = "unix:///var/run/docker.sock"
 
 
+class SqlBrokerSettings(_Section):
+    enabled: bool = False
+
+
 class BrokerSettings(_Section):
     docker: DockerBrokerSettings = Field(default_factory=DockerBrokerSettings)
+    sql: SqlBrokerSettings = Field(default_factory=SqlBrokerSettings)
 
 
 # Asymmetric only: with HMAC algorithms a public JWKS key would double as a signing secret.

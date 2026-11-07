@@ -34,4 +34,18 @@ export AGW_TEST_DOCKER_ENDPOINT=unix:///var/run/docker.sock   # or tcp://127.0.0
 uv run pytest -m broker tests/broker/test_docker_live.py
 ```
 
+## SQL (Postgres container)
+
+The stack has its own compose project and host port 15432, so it does not
+collide with other stacks. `sql/init.sql` creates the `sample` schema and the
+`agw_reader` login the tests use.
+
+```bash
+docker compose -p agw-broker-sql -f tests/broker/docker-compose.sql.yml up -d --wait
+export AGW_TEST_SQL_HOST=127.0.0.1
+export AGW_TEST_SQL_PORT=15432
+uv run pytest -m broker tests/broker/test_sql_live.py
+docker compose -p agw-broker-sql -f tests/broker/docker-compose.sql.yml down -v
+```
+
 `.keys/` holds a throwaway key and must not be committed.

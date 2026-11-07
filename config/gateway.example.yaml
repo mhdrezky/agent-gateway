@@ -30,3 +30,5 @@ brokers:
   docker:
     enabled: false       # mounting the Docker socket is root-equivalent on the host
     socket: unix:///var/run/docker.sock
+  sql:
+    enabled: false       # sql.query on sql_database resources (read-only, gated SELECT)

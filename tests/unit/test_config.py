@@ -18,6 +18,7 @@ def test_example_config_loads() -> None:
     settings = load_settings(EXAMPLE)
     assert settings.var_dir == Path("/app/var")
     assert settings.brokers.docker.enabled is False
+    assert settings.brokers.sql.enabled is False
 
 
 def test_env_overrides_file(monkeypatch: pytest.MonkeyPatch) -> None:

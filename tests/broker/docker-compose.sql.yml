@@ -1,0 +1,21 @@
+# Postgres target for `pytest -m broker tests/broker/test_sql_live.py`. See README.md.
+# Own project name and a non-default host port so it never collides with other stacks:
+#   docker compose -p agw-broker-sql -f tests/broker/docker-compose.sql.yml up -d --wait
+name: agw-broker-sql
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: agw_owner
+      POSTGRES_PASSWORD: owner-only-for-tests
+      POSTGRES_DB: sales
+    volumes:
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "127.0.0.1:15432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agw_owner -d sales"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
