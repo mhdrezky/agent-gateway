@@ -389,7 +389,7 @@ Pola action mendukung wildcard `*` hanya di segmen terakhir.
 
 - `subject`: tepat satu dari `agent_id`, `role` (role agent), `user` (klaim `sub` user, fase 4), atau `user_role` (role user dari `users.json`, fase 4). Subjek `user` dan `user_role` hanya berlaku untuk panggilan dengan `X-User-Token` (§10.3); policy lama tidak berubah artinya.
 - `effect`: `allow` | `deny`.
-- `approval`: `never` | `always` | `by_risk` (default: ikut `risk` action).
+- `approval`: `never` | `always` | `by_risk` (default: ikut `risk` action) | `requester` (fase 4, diputuskan oleh user peminta, §13b).
 - Resource cocok jika id ada di `ids` **atau** semua tag di `tags` dimiliki resource.
 
 ### 8.5 Resource (`resources.json`)
@@ -468,9 +468,13 @@ Fase 4: `user_subject` (opsional, default `null`) berisi `sub` user bila executi
   "expires_at": "...",
   "decided_by": null,
   "decided_at": null,
-  "reason": null
+  "reason": null,
+  "mode": "admin",
+  "requester": null
 }
 ```
+
+Fase 4: `mode` (`admin` | `requester`, default `admin`) menyatakan siapa yang memutuskan; `requester` berisi `sub` user peminta bila `mode=requester` (§13b). Keduanya opsional, jadi approval fase 2 tetap terbaca sebagai approval admin. Execution menyimpan pilihan yang sama di `decision.approver`.
 
 ### 8.9 User (`users.json`, fase 4)
 
@@ -718,6 +722,36 @@ Ditambahkan 2026-11-01 (`modules/elevation/`). Tujuannya: satu approval untuk sa
 - Admin bisa menutup jendela lebih awal (UI: Approvals/Resource → "End now"; CLI: `agw elevation revoke`) atau membuka jendela manual (`agw elevation grant`, atau form di halaman resource).
 - Disimpan di `var/elevations.json` (id `elv_<ULID>`). Pembukaan dan penutupan dicatat di audit (`elevation.granted`, `elevation.revoked`) sebelum disimpan (fail closed).
 
+## 13b. Approval oleh user peminta (`requester`, fase 4)
+
+Untuk tulis yang cukup dikonfirmasi oleh orang yang memintanya sendiri (mis. `mail.send`), policy bisa memakai `approval: requester`. Kanal keputusannya **hanya REST** dengan token user itu sendiri, tidak pernah tool MCP: semua tool MCP terlihat oleh model, dan model tidak boleh mengonfirmasi tulisannya sendiri (kontrak `agentgate-gateway/1` §6).
+
+Siapa yang memutuskan dihitung dari semua `allow` yang cocok (§10.2, §10.3):
+
+1. **Admin** bila ada `allow` yang menuntut approval admin (`always`, `by_risk` yang terpicu), action `critical`, atau action privileged. Admin selalu menang atas `requester`.
+2. Selain itu **requester** bila ada `allow` bermode `requester`. Panggilan tanpa `X-User-Token` → `deny` (`"requester approval needs a user"`), karena tidak ada orang yang bisa mengonfirmasi.
+3. Selain itu tanpa approval.
+
+Aturan keputusan:
+
+- `GET /v1/approvals/mine?status=` memuat approval `requester` milik `sub` user dari `X-User-Token`, untuk agent token yang sama. `POST /v1/approvals/{id}/decide` `{"decision": "confirm"|"reject"}` memutuskannya. Tanpa `X-User-Token` → `401 unauthenticated`.
+- Approval user lain, approval agent lain, atau approval bermode `admin` → `404 approval_not_found` (tidak membocorkan keberadaannya). Sudah diputuskan atau kedaluwarsa → `409 approval_not_pending`.
+- Saat `confirm`, policy dinilai ulang dengan role user saat ini. Bila sudah tidak diizinkan, approval ditandai `rejected` dan execution `denied`. Bila masih diizinkan, execution dijalankan sekali dan respons menunggu hasilnya.
+- Approval tetap terikat `params_digest` dan TTL yang sama (§13). Admin tetap bisa approve/reject approval `requester` lewat API admin/CLI.
+- Audit memakai event `approval.approved`/`approval.rejected` dengan actor `{"type": "user", "id": "<sub>"}`.
+- Transisi execution `pending_approval → approved` bersifat atomik (dicek ulang di dalam lock store), sehingga dispatcher dan konfirmasi user tidak pernah menjalankan execution yang sama dua kali.
+
+`ApprovalView` (respons kedua endpoint): `id`, `execution_id`, `tool` (nama tool MCP, §22), `summary`, `params`, `status`, `created_at`, `expires_at`, `decided_at`, `result`, `error`. Pemetaan `status`:
+
+| Approval | Execution | `status` |
+| -------- | --------- | -------- |
+| `pending` | – | `pending` |
+| `approved` | `succeeded`, `approved`, `running` | `confirmed` |
+| `approved` | `failed` | `failed` |
+| `rejected` | `denied` | `denied` |
+| `rejected` | lainnya | `rejected` |
+| `expired` | – | `expired` |
+
 ## 14. Audit log
 
 ### 14.1 Format entry
@@ -776,6 +810,8 @@ Base path: `/v1`. Semua body JSON. Header `Authorization: Bearer <token>` wajib 
 | POST | `/v1/executions` | Submit eksekusi |
 | GET | `/v1/executions/{id}` | Status & hasil (hanya milik agent sendiri) |
 | GET | `/v1/executions` | Daftar eksekusi agent sendiri (paginasi `?cursor=&limit=`) |
+| GET | `/v1/approvals/mine` | Approval `requester` milik user (`?status=`), wajib `X-User-Token` (§13b) |
+| POST | `/v1/approvals/{id}/decide` | `{"decision": "confirm"\|"reject"}`, wajib `X-User-Token` (§13b) |
 
 Request `POST /v1/executions`:
 
@@ -1113,7 +1149,7 @@ Slice, masing-masing di branch sendiri, dengan SPEC diubah lebih dulu:
 | 1 | MCP Streamable HTTP | Endpoint `/mcp/actions` dengan bearer token agent, di samping `/mcp` dan stdio: satu tool per action, `resource_id` enum, hasil `ToolOutcome` (§16). Plus `GET /v1/contract` |
 | 2 | Identitas user | Verifikasi `X-User-Token` (OIDC: JWKS, `iss`, `aud`, `exp`), `users.json` (subject/grup → role), principal *user atas nama agent*, CLI `agw user` (§8.9, §9.4) |
 | 3 | Otorisasi delegasi | Scope = role user ∩ role agent; policy subject `user` dan `user_role`; visibilitas action, resource, dan execution ikut scope (§10.3) |
-| 4 | Approval `requester` | Mode approval baru yang diputuskan oleh user peminta; REST `GET /v1/approvals/mine`, `POST /v1/approvals/{id}/decide` |
+| 4 | Approval `requester` | Mode approval baru yang diputuskan oleh user peminta; REST `GET /v1/approvals/mine`, `POST /v1/approvals/{id}/decide` (§13b) |
 | 5 | Tool profile MCP | Melengkapi `/mcp/actions` dari slice 1: anotasi `readOnlyHint` / `destructiveHint`, `_meta["agentgate/write"]` (daftar tool sudah mengikuti scope user ∩ agent sejak slice 3) |
 | 6 | Broker `sql` | Port SQL gate agentgate (satu `SELECT`, tabel yang diizinkan, row cap, `limited`) beserta tesnya. Postgres dulu, T-SQL menyusul |
 | 7 | Broker `smtp` | Port konektor mail agentgate (domain yang diizinkan, STARTTLS), action `mail.send` risk `medium` approval `requester`. Mailpit di compose uji |

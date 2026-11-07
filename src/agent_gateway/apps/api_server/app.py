@@ -12,7 +12,7 @@ from starlette.routing import Route
 
 from agent_gateway import __version__
 from agent_gateway.apps.admin_ui.setup import install_admin_ui
-from agent_gateway.apps.api_server import routes_admin, routes_agent
+from agent_gateway.apps.api_server import routes_admin, routes_agent, routes_approvals
 from agent_gateway.apps.api_server.deps import FailureLimiter
 from agent_gateway.apps.api_server.mcp_actions import MCP_ACTIONS_PATH, build_actions_server
 from agent_gateway.apps.api_server.mcp_http import MCP_PATH, build_mcp_server, mcp_endpoint
@@ -83,5 +83,6 @@ def create_app(gateway: Gateway, *, manage_lifecycle: bool = True) -> FastAPI:
 
     app.include_router(routes_agent.router)
     app.include_router(routes_admin.router)
+    app.include_router(routes_approvals.router)
     install_admin_ui(app, gateway)
     return app

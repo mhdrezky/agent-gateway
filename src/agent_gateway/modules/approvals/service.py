@@ -17,7 +17,7 @@ from agent_gateway.common.errors import (
 )
 from agent_gateway.common.ids import IdPrefix, new_id
 from agent_gateway.config import ApprovalSettings
-from agent_gateway.modules.approvals.models import Approval, ApprovalStatus
+from agent_gateway.modules.approvals.models import Approval, ApprovalStatus, Approver
 from agent_gateway.modules.audit.models import Actor, ActorType, AuditEventType, AuditRecord
 from agent_gateway.modules.audit.ports import AuditLog
 from agent_gateway.modules.identity.models import Principal
@@ -40,7 +40,16 @@ class ApprovalWorkflow:
         self._ttl = timedelta(minutes=settings.ttl_minutes)
         self._lock = asyncio.Lock()
 
-    async def request(self, execution_id: str, params_digest: str) -> Approval:
+    async def request(
+        self,
+        execution_id: str,
+        params_digest: str,
+        *,
+        mode: Approver = Approver.ADMIN,
+        requester: str | None = None,
+    ) -> Approval:
+        if (mode is Approver.REQUESTER) != (requester is not None):
+            raise ValueError("a requester approval needs the requester, and only it does")
         now = self._clock.now()
         approval = Approval(
             id=new_id(IdPrefix.APPROVAL),
@@ -48,6 +57,8 @@ class ApprovalWorkflow:
             params_digest=params_digest,
             requested_at=now,
             expires_at=now + self._ttl,
+            mode=mode,
+            requester=requester,
         )
         await self._record(AuditEventType.APPROVAL_REQUESTED, approval, SYSTEM_ACTOR)
         await self._approvals.put(approval)
@@ -69,12 +80,32 @@ class ApprovalWorkflow:
         )
 
     async def approve(self, approval_id: str, actor: Principal) -> Approval:
-        return await self._decide(approval_id, actor, ApprovalStatus.APPROVED, None)
+        return await self._admin_decide(approval_id, actor, ApprovalStatus.APPROVED, None)
 
     async def reject(
         self, approval_id: str, actor: Principal, reason: str | None = None
     ) -> Approval:
-        return await self._decide(approval_id, actor, ApprovalStatus.REJECTED, reason)
+        return await self._admin_decide(approval_id, actor, ApprovalStatus.REJECTED, reason)
+
+    async def decide_as_requester(
+        self, approval_id: str, subject: str, *, approve: bool, reason: str | None = None
+    ) -> Approval:
+        """The requesting user decides their own ``requester`` approval (SPEC §13b).
+
+        Anyone else's approval, or one an admin must decide, is reported as not found.
+        """
+
+        def owned(approval: Approval) -> bool:
+            return approval.mode is Approver.REQUESTER and approval.requester == subject
+
+        return await self._decide(
+            approval_id,
+            ApprovalStatus.APPROVED if approve else ApprovalStatus.REJECTED,
+            reason,
+            decided_by=subject,
+            actor=Actor(type=ActorType.USER, id=subject),
+            allowed=owned,
+        )
 
     async def expire_due(self) -> list[Approval]:
         expired: list[Approval] = []
@@ -84,7 +115,7 @@ class ApprovalWorkflow:
                     expired.append(await self._expire(approval.id))
         return expired
 
-    async def _decide(
+    async def _admin_decide(
         self,
         approval_id: str,
         actor: Principal,
@@ -93,9 +124,28 @@ class ApprovalWorkflow:
     ) -> Approval:
         if not actor.is_admin:
             raise AdminRequiredError("only an admin can approve or reject")
+        return await self._decide(
+            approval_id,
+            status,
+            reason,
+            decided_by=actor.token_id,
+            actor=Actor(type=ActorType.ADMIN, id=actor.token_id),
+            allowed=lambda _: True,
+        )
+
+    async def _decide(
+        self,
+        approval_id: str,
+        status: ApprovalStatus,
+        reason: str | None,
+        *,
+        decided_by: str,
+        actor: Actor,
+        allowed: Callable[[Approval], bool],
+    ) -> Approval:
         async with self._lock:
             current = await self._approvals.get(approval_id)
-            if current is None:
+            if current is None or not allowed(current):
                 raise ApprovalNotFoundError(f"approval {approval_id} not found")
             if self._is_overdue(current):
                 await self._expire(approval_id)
@@ -107,7 +157,7 @@ class ApprovalWorkflow:
                 current.model_dump()
                 | {
                     "status": status,
-                    "decided_by": actor.token_id,
+                    "decided_by": decided_by,
                     "decided_at": self._clock.now(),
                     "reason": reason,
                 }
@@ -117,8 +167,7 @@ class ApprovalWorkflow:
                 if status is ApprovalStatus.APPROVED
                 else AuditEventType.APPROVAL_REJECTED
             )
-            admin = Actor(type=ActorType.ADMIN, id=actor.token_id)
-            await self._record(event, decided, admin)
+            await self._record(event, decided, actor)
             return await self._approvals.update(approval_id, _transition(decided))
 
     async def _expire(self, approval_id: str) -> Approval:
@@ -139,6 +188,8 @@ class ApprovalWorkflow:
 
     async def _record(self, event: AuditEventType, approval: Approval, actor: Actor) -> None:
         details: dict[str, object] = {"approval_id": approval.id}
+        if approval.mode is Approver.REQUESTER:
+            details["mode"] = str(approval.mode)
         if approval.reason is not None:
             details["reason"] = approval.reason
         await self._audit.append(

@@ -3,6 +3,7 @@
 from collections.abc import Callable, Iterable
 
 from agent_gateway.modules.action_registry.models import ActionDefinition, RiskLevel
+from agent_gateway.modules.approvals.models import Approver
 from agent_gateway.modules.authorization.models import (
     ApprovalMode,
     AuthorizationRequest,
@@ -25,6 +26,8 @@ REASON_DENY_POLICY = "denied by policy"
 REASON_NO_POLICY = "no matching allow policy"
 REASON_ALLOWED = "allowed by policy"
 REASON_ALLOWED_APPROVAL = "allowed by policy, approval required"
+REASON_ALLOWED_REQUESTER = "allowed by policy, requester confirmation required"
+REASON_REQUESTER_NEEDS_USER = "requester approval needs a user"
 
 
 def pattern_matches(pattern: str, action_id: str) -> bool:
@@ -83,9 +86,15 @@ def user_subject_matches(policy: Policy, principal: Principal) -> bool:
     return subject.user_role is not None and subject.user_role in user.roles
 
 
-def _approval_required(mode: ApprovalMode, risk: RiskLevel, resource: Resource) -> bool:
+def _admin_approval_required(
+    mode: ApprovalMode, action: ActionDefinition, resource: Resource
+) -> bool:
+    risk = action.risk
     if risk is RiskLevel.CRITICAL or mode is ApprovalMode.ALWAYS:
         return True
+    if mode is ApprovalMode.REQUESTER:
+        # A requester may not confirm a privileged action: that stays with the admin.
+        return action.privileged
     if mode is ApprovalMode.NEVER:
         return False
     return risk is RiskLevel.HIGH or (risk is RiskLevel.MEDIUM and PROD_TAG in resource.tags)
@@ -132,14 +141,26 @@ class DefaultPolicyEngine:
                 return Decision.deny(REASON_NO_USER_POLICY)
             allows += user_allows
 
-        # The strictest policy wins: report the first one that demands approval.
+        # The strictest policy wins: admin approval, then requester approval, then none.
         for policy in allows:
-            if _approval_required(policy.approval, action.risk, resource):
+            if _admin_approval_required(policy.approval, action, resource):
                 return Decision(
                     effect=PolicyEffect.ALLOW,
                     approval_required=True,
                     policy_id=policy.id,
                     reason=REASON_ALLOWED_APPROVAL,
+                    approver=Approver.ADMIN,
+                )
+        for policy in allows:
+            if policy.approval is ApprovalMode.REQUESTER:
+                if user is None:
+                    return Decision.deny(REASON_REQUESTER_NEEDS_USER, policy_id=policy.id)
+                return Decision(
+                    effect=PolicyEffect.ALLOW,
+                    approval_required=True,
+                    policy_id=policy.id,
+                    reason=REASON_ALLOWED_REQUESTER,
+                    approver=Approver.REQUESTER,
                 )
         return Decision(
             effect=PolicyEffect.ALLOW,

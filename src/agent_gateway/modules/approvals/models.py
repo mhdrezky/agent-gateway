@@ -14,6 +14,13 @@ class ApprovalStatus(StrEnum):
     EXPIRED = "expired"
 
 
+class Approver(StrEnum):
+    """Who decides an approval (SPEC §13b)."""
+
+    ADMIN = "admin"
+    REQUESTER = "requester"
+
+
 class Approval(Record):
     execution_id: str
     params_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
@@ -23,3 +30,6 @@ class Approval(Record):
     decided_by: str | None = None
     decided_at: AwareDatetime | None = None
     reason: str | None = Field(default=None, max_length=500)
+    mode: Approver = Approver.ADMIN
+    # The requesting user's ``sub``; set only when ``mode`` is ``requester``.
+    requester: str | None = None

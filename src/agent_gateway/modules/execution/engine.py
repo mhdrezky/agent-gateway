@@ -17,6 +17,8 @@ from agent_gateway.common.clock import Clock
 from agent_gateway.common.errors import (
     ActionNotAllowedError,
     ActionNotFoundError,
+    ApprovalNotFoundError,
+    AuthenticationError,
     ExecutionNotFoundError,
     GatewayError,
     ResourceNotFoundError,
@@ -25,7 +27,7 @@ from agent_gateway.common.ids import IdPrefix, new_id
 from agent_gateway.config import ExecutionSettings
 from agent_gateway.modules.action_registry.models import RegisteredAction
 from agent_gateway.modules.action_registry.ports import ActionRegistry
-from agent_gateway.modules.approvals.models import Approval, ApprovalStatus
+from agent_gateway.modules.approvals.models import Approval, ApprovalStatus, Approver
 from agent_gateway.modules.approvals.ports import ApprovalService
 from agent_gateway.modules.audit.models import Actor, ActorType, AuditEventType, AuditRecord
 from agent_gateway.modules.audit.ports import AuditLog
@@ -61,6 +63,7 @@ SYSTEM_ACTOR = Actor(type=ActorType.SYSTEM, id="execution")
 INTERRUPTED = "interrupted: the gateway stopped while this execution was running"
 BROKER_FAILED = "the broker failed; see server logs"
 TIMED_OUT = "the action timed out"
+NO_LONGER_ALLOWED = "no longer allowed when the requester confirmed"
 
 
 class GatewayExecutionEngine:
@@ -99,7 +102,7 @@ class GatewayExecutionEngine:
         self._global_slots = asyncio.Semaphore(settings.max_concurrent)
         self._resource_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._tasks: set[asyncio.Task[Execution]] = set()
-        self._scheduled: set[str] = set()
+        self._scheduled: dict[str, asyncio.Task[Execution]] = {}
 
     # ---- submit -------------------------------------------------------------------------
 
@@ -131,16 +134,7 @@ class GatewayExecutionEngine:
             raise ResourceNotFoundError(f"resource {request.resource_id!r} not found")
 
         normalized = params.model_dump(mode="json")
-        decision = self._policy_engine.decide(
-            AuthorizationRequest(
-                principal=principal,
-                action=registered.definition,
-                resource=resource,
-                roles=await self._roles.all(),
-                policies=await self._policies.all(),
-                now=self._clock.now(),
-            )
-        )
+        decision = await self._authorize(principal, registered, resource)
         decision = await self._apply_elevation(decision, registered, agent_id, resource.id)
         execution = Execution(
             id=new_id(IdPrefix.EXECUTION),
@@ -177,7 +171,13 @@ class GatewayExecutionEngine:
 
         if decision.approval_required:
             await self._executions.put(execution)
-            approval = await self._approvals.request(execution.id, execution.params_digest)
+            by_requester = decision.approver is Approver.REQUESTER
+            approval = await self._approvals.request(
+                execution.id,
+                execution.params_digest,
+                mode=Approver.REQUESTER if by_requester else Approver.ADMIN,
+                requester=execution.user_subject if by_requester else None,
+            )
             return await self._executions.update(
                 execution.id, lambda e: e.model_copy(update={"approval_id": approval.id})
             )
@@ -238,6 +238,81 @@ class GatewayExecutionEngine:
             and (principal.user is None or any(selector_matches(p.resources, r) for p in user_side))
         ]
 
+    # ---- approvals held for the requesting user (SPEC §13b) ------------------------------
+
+    async def my_approvals(self, principal: Principal) -> list[tuple[Approval, Execution]]:
+        """The ``requester`` approvals of the caller's user for this agent, newest first."""
+        subject = _require_user(principal)
+        agent_id = _require_agent(principal)
+        mine: list[tuple[Approval, Execution]] = []
+        for approval in reversed(await self._approvals.find()):
+            if approval.mode is not Approver.REQUESTER or approval.requester != subject:
+                continue
+            execution = await self._executions.get(approval.execution_id)
+            if execution is not None and execution.agent_id == agent_id:
+                mine.append((approval, execution))
+        return mine
+
+    async def decide_as_requester(
+        self, principal: Principal, approval_id: str, *, confirm: bool
+    ) -> tuple[Approval, Execution]:
+        """Confirm or reject one of the caller's ``requester`` approvals.
+
+        A confirmation re-runs authorization with the user's current roles, then runs the
+        execution and waits for its result.
+        """
+        subject = _require_user(principal)
+        agent_id = _require_agent(principal)
+        approval = await self._approvals.get(approval_id)
+        execution = await self._executions.get(approval.execution_id) if approval else None
+        if (
+            approval is None
+            or execution is None
+            or execution.agent_id != agent_id
+            or approval.mode is not Approver.REQUESTER
+            or approval.requester != subject
+        ):
+            raise ApprovalNotFoundError(f"approval {approval_id} not found")
+
+        if confirm and not await self._still_allowed(principal, execution):
+            decided = await self._approvals.decide_as_requester(
+                approval_id, subject, approve=False, reason=NO_LONGER_ALLOWED
+            )
+            denied = await self._leave_pending(
+                execution.id, {"status": ExecutionStatus.DENIED, "finished_at": self._clock.now()}
+            )
+            if denied is not None:
+                await self._record(
+                    AuditEventType.EXECUTION_DENIED,
+                    denied,
+                    Actor(type=ActorType.USER, id=subject),
+                    {"reason": NO_LONGER_ALLOWED},
+                )
+            return decided, await self._reload(execution.id)
+
+        decided = await self._approvals.decide_as_requester(approval_id, subject, approve=confirm)
+        await self._apply_approval(execution, decided)
+        task = self._scheduled.get(execution.id)
+        if task is not None:
+            # Shielded: a client that disconnects must not cancel a run already started.
+            await asyncio.gather(asyncio.shield(task), return_exceptions=True)
+        return decided, await self._reload(execution.id)
+
+    async def _still_allowed(self, principal: Principal, execution: Execution) -> bool:
+        registered = self._registry.get(execution.action)
+        resource = await self._resources.get(execution.resource_id)
+        if registered is None or resource is None:
+            return False
+        decision = await self._authorize(principal, registered, resource)
+        # A policy that now demands an admin takes the decision away from the requester.
+        return decision.allowed and decision.approver is not Approver.ADMIN
+
+    async def _reload(self, execution_id: str) -> Execution:
+        execution = await self._executions.get(execution_id)
+        if execution is None:
+            raise ExecutionNotFoundError(f"execution {execution_id} not found")
+        return execution
+
     # ---- approvals and lifecycle ----------------------------------------------------------
 
     async def dispatch_approvals(self) -> None:
@@ -276,9 +351,9 @@ class GatewayExecutionEngine:
                 failed = await self._finish(execution, None, error="approval does not match params")
                 await self._record(AuditEventType.EXECUTION_FAILED, failed, SYSTEM_ACTOR)
                 return
-            approved = await self._executions.update(
-                execution.id, lambda e: e.model_copy(update={"status": ExecutionStatus.APPROVED})
-            )
+            approved = await self._leave_pending(execution.id, {"status": ExecutionStatus.APPROVED})
+            if approved is None:
+                return
             await self._open_elevation(approved, approval)
             self._schedule(approved)
             return
@@ -292,11 +367,30 @@ class GatewayExecutionEngine:
             if status is ExecutionStatus.REJECTED
             else AuditEventType.EXECUTION_FAILED
         )
-        closed = await self._executions.update(
-            execution.id,
-            lambda e: e.model_copy(update={"status": status, "finished_at": self._clock.now()}),
+        closed = await self._leave_pending(
+            execution.id, {"status": status, "finished_at": self._clock.now()}
         )
+        if closed is None:
+            return
         await self._record(event, closed, SYSTEM_ACTOR, {"approval_status": str(approval.status)})
+
+    async def _leave_pending(self, execution_id: str, update: dict[str, Any]) -> Execution | None:
+        """Apply ``update`` only if the execution still waits for approval.
+
+        The check runs inside the store's lock, so of two callers deciding at once (the
+        dispatcher and a confirming user) exactly one moves the execution; the other gets
+        ``None`` and must not run it.
+        """
+
+        def apply(stored: Execution) -> Execution:
+            if stored.status is not ExecutionStatus.PENDING_APPROVAL:
+                raise _AlreadyDecidedError
+            return stored.model_copy(update=update)
+
+        try:
+            return await self._executions.update(execution_id, apply)
+        except _AlreadyDecidedError:
+            return None
 
     async def _apply_elevation(
         self, decision: Decision, registered: RegisteredAction, agent_id: str, resource_id: str
@@ -352,13 +446,13 @@ class GatewayExecutionEngine:
     def _schedule(self, execution: Execution) -> None:
         if execution.id in self._scheduled:
             return
-        self._scheduled.add(execution.id)
         task = asyncio.create_task(self._run_by_id(execution.id))
+        self._scheduled[execution.id] = task
         self._tasks.add(task)
 
         def done(t: asyncio.Task[Execution]) -> None:
             self._tasks.discard(t)
-            self._scheduled.discard(execution.id)
+            self._scheduled.pop(execution.id, None)
             if not t.cancelled() and t.exception() is not None:
                 self._log.error(
                     "background execution %s failed", execution.id, exc_info=t.exception()
@@ -450,6 +544,20 @@ class GatewayExecutionEngine:
 
     # ---- helpers ------------------------------------------------------------------------
 
+    async def _authorize(
+        self, principal: Principal, registered: RegisteredAction, resource: Resource
+    ) -> Decision:
+        return self._policy_engine.decide(
+            AuthorizationRequest(
+                principal=principal,
+                action=registered.definition,
+                resource=resource,
+                roles=await self._roles.all(),
+                policies=await self._policies.all(),
+                now=self._clock.now(),
+            )
+        )
+
     async def _find_idempotent(
         self, agent_id: str, user_subject: str | None, key: str
     ) -> Execution | None:
@@ -498,6 +606,16 @@ def _require_agent(principal: Principal) -> str:
     if principal.kind is not TokenKind.AGENT or principal.agent_id is None:
         raise ActionNotAllowedError("only agent tokens can run actions")
     return principal.agent_id
+
+
+def _require_user(principal: Principal) -> str:
+    if principal.user is None:
+        raise AuthenticationError("a user token (X-User-Token) is required")
+    return principal.user.subject
+
+
+class _AlreadyDecidedError(Exception):
+    """An execution left ``pending_approval`` before this caller could move it."""
 
 
 def _visible(principal: Principal, execution: Execution) -> bool:

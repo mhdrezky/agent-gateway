@@ -10,6 +10,7 @@ from pydantic import AwareDatetime, Field, StringConstraints, model_validator
 
 from agent_gateway.common.models import Record, StrictModel
 from agent_gateway.modules.action_registry.models import ActionDefinition
+from agent_gateway.modules.approvals.models import Approver
 from agent_gateway.modules.identity.models import Principal
 from agent_gateway.modules.resources.models import Resource
 
@@ -64,6 +65,8 @@ class ApprovalMode(StrEnum):
     NEVER = "never"
     ALWAYS = "always"
     BY_RISK = "by_risk"
+    # The requesting user confirms (SPEC §13b); never satisfied without a user.
+    REQUESTER = "requester"
 
 
 class Policy(Record):
@@ -80,6 +83,8 @@ class Decision(StrictModel):
     approval_required: bool
     policy_id: str | None = None
     reason: str
+    # Who decides when ``approval_required``; ``None`` (phase 2 records) means the admin.
+    approver: Approver | None = None
 
     @classmethod
     def deny(cls, reason: str, policy_id: str | None = None) -> "Decision":

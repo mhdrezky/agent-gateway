@@ -47,6 +47,7 @@ class ActorType(StrEnum):
     AGENT = "agent"
     ADMIN = "admin"
     SYSTEM = "system"
+    USER = "user"
 
 
 class Actor(StrictModel):

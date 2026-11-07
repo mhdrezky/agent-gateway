@@ -4,6 +4,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Protocol
 
+from agent_gateway.modules.approvals.models import Approval
 from agent_gateway.modules.execution.models import Execution, ExecutionRequest
 from agent_gateway.modules.identity.models import Principal
 
@@ -49,4 +50,17 @@ class ExecutionEngine(Protocol):
         self, principal: Principal, *, cursor: str | None = None, limit: int = 50
     ) -> tuple[list[Execution], str | None]:
         """Return a page and the next cursor."""
+        ...
+
+    async def my_approvals(self, principal: Principal) -> list[tuple[Approval, Execution]]:
+        """``requester`` approvals of the caller's user for its agent (SPEC §13b).
+
+        Raise ``AuthenticationError`` without a user.
+        """
+        ...
+
+    async def decide_as_requester(
+        self, principal: Principal, approval_id: str, *, confirm: bool
+    ) -> tuple[Approval, Execution]:
+        """Confirm (re-authorize, run, and wait) or reject one of those approvals."""
         ...

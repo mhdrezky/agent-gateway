@@ -37,6 +37,29 @@ class ToolOutcome(StrictModel):
     error: str | None = None
 
 
+ApprovalViewStatus = Literal["pending", "confirmed", "rejected", "expired", "denied", "failed"]
+
+
+class ApprovalView(StrictModel):
+    """A write held for its requester, as the requester sees it (SPEC §13b, contract §6)."""
+
+    id: str
+    execution_id: str
+    tool: str
+    summary: str
+    params: dict[str, Any]
+    status: ApprovalViewStatus
+    created_at: AwareDatetime
+    expires_at: AwareDatetime
+    decided_at: AwareDatetime | None = None
+    result: dict[str, Any] | None = None
+    error: str | None = None
+
+
+class DecideBody(StrictModel):
+    decision: Literal["confirm", "reject"]
+
+
 class WhoAmI(StrictModel):
     kind: TokenKind
     token_id: str
