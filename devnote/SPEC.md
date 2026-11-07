@@ -128,7 +128,8 @@ agent-gateway/
 │   │   ├── docker/
 │   │   ├── github/
 │   │   ├── cloudflare/
-│   │   └── http/
+│   │   ├── http/
+│   │   └── smtp/                # mail.send (fase 4, §11.4)
 │   ├── common/                  # utilitas bersama: ids, clock, canonical JSON, errors, base model
 │   ├── config.py                # loader konfigurasi
 │   ├── runtime.py               # composition root: merangkai semua implementasi
@@ -656,6 +657,58 @@ Dengan policy `by_risk` (default), setiap `ssh.sudo` menunggu approval karena ri
 
 SSH broker memakai `asyncssh`, wajib verifikasi `host_key_fingerprint` (tidak ada auto-accept). Koneksi hanya meminta algoritma `host_key_algorithm` (default `ssh-ed25519`), karena server OpenSSH punya beberapa host key dan tanpa batasan ini asyncssh menegosiasikan RSA sehingga fingerprint ed25519 tidak pernah cocok (ditemukan saat uji e2e). Docker broker memakai Docker Engine API; hanya container dengan label `agw.managed=true` atau di allowlist resource yang boleh disentuh.
 
+### 11.4 Broker `smtp` (fase 4, slice 7)
+
+Port konektor mail "doorman" agentgate (`shared/connectors/smtp.py`) ke `brokers/smtp/`. Broker ini hanya mengirim mail; tidak ada action baca kotak masuk. Memakai stdlib (`smtplib`, `email`) yang dijalankan di thread (`asyncio.to_thread`), tanpa dependency baru. Dimatikan secara default (`brokers.smtp.enabled`, §17).
+
+| Action id | Broker | Risk | Keterangan |
+| --------- | ------ | ---- | ---------- |
+| `mail.send` | smtp | medium, **write** | Kirim satu mail teks ke penerima di domain yang diizinkan resource |
+
+Nama broker `smtp`, tetapi `ActionDefinition.broker` untuk `mail.send` bernilai `mail` karena diturunkan dari segmen pertama id action (§11.1); nilai ini hanya dipakai untuk nama logger.
+
+**Params `mail.send`** (`extra="forbid"`, sama dengan yang didukung doorman; tidak ada `cc`, `bcc`, lampiran, atau HTML):
+
+| Field | Tipe | Aturan |
+| ----- | ---- | ------ |
+| `to` | list alamat (string tunggal diterima dan dijadikan list) | 1–50 alamat, spasi di tepi dibuang; tiap alamat `local@domain` polos (tanpa nama tampilan, koma, atau CR/LF), maks 254 karakter |
+| `subject` | string | 1–200 karakter setelah di-trim, satu baris (tanpa karakter kontrol, termasuk CR/LF) |
+| `body` | string | teks polos, 1–20.000 karakter setelah di-trim |
+
+**Atribut resource `smtp_server`:**
+
+| Atribut | Default | Keterangan |
+| ------- | ------- | ---------- |
+| `host` | – (wajib) | hostname atau IP server SMTP |
+| `port` | `587` | |
+| `security` | `starttls` | `starttls` (biasanya 587), `ssl` = TLS implisit (biasanya 465), atau `none` (hanya untuk server uji seperti Mailpit) |
+| `from_address` | – (wajib) | alamat pengirim, divalidasi dengan pola alamat yang sama dengan `to` |
+| `allowed_domains` | – (wajib, min 1) | domain penerima yang diizinkan; subdomain ikut diizinkan (`example.com` mencakup `ops.example.com`, tidak mencakup `example.com.evil.net`); disimpan huruf kecil |
+| `max_recipients` | `10` | batas jumlah `to` per mail untuk resource ini (1–50) |
+| `timeout_seconds` | `15` | timeout socket per operasi SMTP (1–60); seluruh action tetap dibatasi timeout action (60 detik) |
+
+**Credential (opsional):** tipe `basic_auth`, `value` = password, field `username`. Tanpa credential broker tidak login. Credential dengan `security: none` ditolak (password tidak boleh lewat tanpa enkripsi); tipe lain atau tanpa field `username` juga ditolak.
+
+**Hasil (`ActionResult.data`):**
+
+```json
+{ "sent_to": ["buyer@example.com"], "refused": [], "message_id": "<...@example.com>" }
+```
+
+`sent_to` = penerima yang diterima server; `refused` = penerima yang ditolak server sementara yang lain diterima (mail tetap terkirim, `ok` tetap `true` agar agent tidak mengirim ulang). Bila semua penerima ditolak → `ok=false`.
+
+**Aturan keamanan:**
+
+- Setiap penerima harus berada di `allowed_domains`; satu saja di luar → seluruh mail ditolak sebelum koneksi dibuka.
+- Header injection ditolak: `subject` tanpa karakter kontrol, alamat hanya bentuk `local@domain` polos, `from_address` divalidasi saat resource didaftarkan. `EmailMessage` juga menolak header berisi CR/LF (lapisan kedua).
+- Batas ukuran: maks 50 penerima (dan `max_recipients` resource), subject 200 karakter, body 20.000 karakter.
+- TLS: sertifikat server selalu diverifikasi (`ssl.create_default_context()`). `security: starttls` **fail closed**: bila server tidak menawarkan STARTTLS, mail tidak dikirim dan login tidak dicoba.
+- Error menjadi `ActionResult(ok=false, error=<pesan aman>)` (mis. `smtp authentication failed`, `smtp server does not offer STARTTLS`, `smtp TLS handshake failed`, `smtp connection failed`); teks balasan server, stack trace, dan password tidak pernah dikirim ke agent.
+
+**Approval:** di instance gateway untuk agentgate, policy `mail.send` akan memakai mode approval `requester` (diputuskan oleh user peminta, slice 4). Mode itu dibangun di slice lain; slice 7 tidak mengubah approval. Sampai mode itu ada, `mail.send` mengikuti mode approval yang sudah ada (`by_risk`: risk `medium` wajib approval di resource `env:prod`).
+
+Perbedaan dari doorman: default `security` adalah `starttls` (doorman `none`) agar konfigurasi yang lupa diisi tetap terenkripsi; STARTTLS dicek secara eksplisit lewat `EHLO`; subject juga menolak `\r` dan karakter kontrol lain (doorman hanya `\n`); batas penerima bisa diatur per resource; header `Date` ditambahkan; penolakan sebagian penerima dilaporkan di `refused`.
+
 ## 12. Execution engine
 
 `execution.submit(agent, action_id, resource_id, params, idempotency_key) -> Execution`
@@ -945,6 +998,8 @@ brokers:
   docker:
     enabled: false        # mount Docker socket = akses root ke host; aktifkan secara sadar
     socket: unix:///var/run/docker.sock
+  smtp:
+    enabled: false        # broker mail.send (§11.4); aktifkan hanya di instance yang mengirim mail
 users:
   oidc:                   # opsional; tanpa ini X-User-Token selalu ditolak (§9.4)
     issuer: https://idp.example.com/realms/company   # nilai klaim iss yang diharapkan
@@ -996,7 +1051,7 @@ secrets:
 | ------- | ----- | ----- |
 | Unit | storage, crypto, policy engine, registry, audit hash | pytest, hypothesis |
 | Integration | REST API end-to-end dengan broker palsu | pytest, httpx `ASGITransport` |
-| Broker | SSH broker ke container `openssh-server`, Docker broker ke Docker lokal | pytest marker `@broker` |
+| Broker | SSH broker ke container `openssh-server`, Docker broker ke Docker lokal, SMTP broker ke Mailpit (compose project `agw-broker-smtp`, port 11025/18025, terpisah dari Mailpit stack dev agentgate di 1025/8025) | pytest marker `@broker` |
 | Security | test per prinsip P1–P7 | pytest |
 
 Test wajib:
