@@ -78,5 +78,5 @@ warn_required_dynamic_aliases = true
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-markers = ["broker: needs a real SSH host, Docker engine, or database"]
+markers = ["broker: needs a real SSH host, Docker engine, database, or SMTP server"]
 addopts = "-m 'not broker'"

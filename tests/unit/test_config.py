@@ -19,6 +19,7 @@ def test_example_config_loads() -> None:
     assert settings.var_dir == Path("/app/var")
     assert settings.brokers.docker.enabled is False
     assert settings.brokers.sql.enabled is False
+    assert settings.brokers.smtp.enabled is False
 
 
 def test_env_overrides_file(monkeypatch: pytest.MonkeyPatch) -> None:

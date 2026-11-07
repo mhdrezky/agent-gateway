@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from agent_gateway.brokers.base import Broker
 from agent_gateway.brokers.docker.broker import DockerBroker
+from agent_gateway.brokers.smtp.broker import SmtpBroker
 from agent_gateway.brokers.sql.broker import SqlBroker
 from agent_gateway.brokers.ssh.broker import SshBroker
 from agent_gateway.common.clock import Clock, SystemClock
@@ -103,6 +104,8 @@ def default_brokers(settings: Settings) -> list[Broker]:
         brokers.append(DockerBroker(default_endpoint=settings.brokers.docker.socket))
     if settings.brokers.sql.enabled:
         brokers.append(SqlBroker())
+    if settings.brokers.smtp.enabled:
+        brokers.append(SmtpBroker())
     return brokers
 
 

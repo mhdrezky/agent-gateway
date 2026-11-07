@@ -48,4 +48,21 @@ uv run pytest -m broker tests/broker/test_sql_live.py
 docker compose -p agw-broker-sql -f tests/broker/docker-compose.sql.yml down -v
 ```
 
+## SMTP (Mailpit)
+
+Its own compose project (`agw-broker-smtp`) and host ports, so it never collides
+with the agentgate dev stack, which runs Mailpit on 1025/8025. `mailpit` is plain
+SMTP (delivery is checked through its HTTP API); `mailpit-tls` offers STARTTLS
+with a self-signed certificate the broker must refuse.
+
+```bash
+docker compose -f tests/broker/docker-compose.smtp.yml up -d
+export AGW_TEST_SMTP_HOST=127.0.0.1
+export AGW_TEST_SMTP_PORT=11025
+export AGW_TEST_MAILPIT_API=http://127.0.0.1:18025
+export AGW_TEST_SMTP_TLS_PORT=11026
+uv run pytest -m broker tests/broker/test_smtp_live.py
+docker compose -f tests/broker/docker-compose.smtp.yml down
+```
+
 `.keys/` holds a throwaway key and must not be committed.

@@ -60,12 +60,19 @@ class DockerBrokerSettings(_Section):
 
 
 class SqlBrokerSettings(_Section):
+    # Off by default: only the instance that queries a database turns sql.query on.
+    enabled: bool = False
+
+
+class SmtpBrokerSettings(_Section):
+    # Off by default: only the instance that sends mail (agentgate) turns mail.send on.
     enabled: bool = False
 
 
 class BrokerSettings(_Section):
     docker: DockerBrokerSettings = Field(default_factory=DockerBrokerSettings)
     sql: SqlBrokerSettings = Field(default_factory=SqlBrokerSettings)
+    smtp: SmtpBrokerSettings = Field(default_factory=SmtpBrokerSettings)
 
 
 # Asymmetric only: with HMAC algorithms a public JWKS key would double as a signing secret.
