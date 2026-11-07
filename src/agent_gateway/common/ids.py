@@ -16,6 +16,7 @@ class IdPrefix(StrEnum):
     EXECUTION = "exe"
     APPROVAL = "apr"
     ELEVATION = "elv"
+    USER = "usr"
 
 
 def new_id(prefix: IdPrefix) -> str:

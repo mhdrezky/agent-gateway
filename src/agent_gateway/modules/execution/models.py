@@ -43,6 +43,8 @@ class ExecutionRequest(StrictModel):
 
 class Execution(Record):
     agent_id: str
+    # The ``sub`` of the user the agent acted for (SPEC §9.4); None for agent-only calls.
+    user_subject: str | None = None
     action: str
     resource_id: str
     params: dict[str, Any] = Field(default_factory=dict)

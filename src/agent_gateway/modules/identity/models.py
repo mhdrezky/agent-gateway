@@ -1,4 +1,4 @@
-"""Agent and token models (SPEC §8.1, §8.2, §9)."""
+"""Agent, token, and user models (SPEC §8.1, §8.2, §8.9, §9)."""
 
 from enum import StrEnum
 from typing import Self
@@ -57,6 +57,34 @@ class IssuedToken(StrictModel):
     plaintext: SecretStr
 
 
+class UserMatch(StrictModel):
+    """Exactly one of ``subject`` (the ``sub`` claim) or ``group`` (in the groups claim)."""
+
+    subject: str | None = Field(default=None, min_length=1, max_length=255)
+    group: str | None = Field(default=None, min_length=1, max_length=255)
+
+    @model_validator(mode="after")
+    def _exactly_one(self) -> Self:
+        if (self.subject is None) == (self.group is None):
+            raise ValueError("match needs exactly one of subject or group")
+        return self
+
+
+class User(Record):
+    """An entry of ``users.json`` (SPEC §8.9): which OIDC users get which roles."""
+
+    match: UserMatch
+    roles: tuple[str, ...] = ()
+
+
+class UserIdentity(StrictModel):
+    """A verified OIDC user on whose behalf an agent calls (SPEC §9.4)."""
+
+    subject: str
+    user_ids: tuple[str, ...] = ()
+    roles: tuple[str, ...] = ()
+
+
 class Principal(StrictModel):
     """The authenticated caller of a request."""
 
@@ -64,6 +92,8 @@ class Principal(StrictModel):
     token_id: str
     agent_id: str | None = None
     roles: tuple[str, ...] = ()
+    # Set only for an agent calling on behalf of a user (``X-User-Token``).
+    user: UserIdentity | None = None
 
     @property
     def is_admin(self) -> bool:

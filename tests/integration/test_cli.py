@@ -140,3 +140,27 @@ def test_resource_sudo_toggle(env: dict[str, str]) -> None:
 
     missing = runner.invoke(app, ["resource", "sudo", "res_missing", "--enable"], env=env)
     assert missing.exit_code == 1
+
+
+def test_users_map_oidc_claims_to_roles(env: dict[str, str]) -> None:
+    group = runner.invoke(app, ["user", "add", "--group", "staff", "-r", "staff"], env=env)
+    assert group.exit_code == 0, group.output
+    added = json.loads(group.output)
+    assert added["id"].startswith("usr_")
+    assert added["match"] == {"subject": None, "group": "staff"}
+    subject = runner.invoke(
+        app, ["user", "add", "--subject", "8f2c", "-r", "author", "-r", "staff"], env=env
+    )
+    assert subject.exit_code == 0, subject.output
+
+    listed = json.loads(runner.invoke(app, ["user", "list"], env=env).output)
+    assert sorted(u["roles"] for u in listed) == [["author", "staff"], ["staff"]]
+
+    both = runner.invoke(app, ["user", "add", "--group", "a", "--subject", "b", "-r", "x"], env=env)
+    assert both.exit_code == 1
+    neither = runner.invoke(app, ["user", "add", "-r", "x"], env=env)
+    assert neither.exit_code == 1
+
+    deleted = runner.invoke(app, ["user", "delete", added["id"]], env=env)
+    assert deleted.output.strip() == "deleted"
+    assert len(json.loads(runner.invoke(app, ["user", "list"], env=env).output)) == 1

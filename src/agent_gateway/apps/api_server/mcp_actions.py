@@ -15,7 +15,7 @@ from mcp.server.context import ServerRequestContext
 from mcp.server.lowlevel import Server
 from pydantic import ValidationError
 
-from agent_gateway.apps.api_server.deps import bearer_token
+from agent_gateway.apps.api_server.deps import principal_from_headers
 from agent_gateway.apps.api_server.mcp_http import AGENT_ONLY
 from agent_gateway.apps.api_server.schemas import ToolOutcome
 from agent_gateway.common.errors import ActionNotAllowedError, GatewayError, InvalidParamsError
@@ -118,9 +118,7 @@ def _result(outcome: ToolOutcome) -> types.CallToolResult:
 def build_actions_server(gateway: Gateway) -> Server[Any]:
     async def agent(ctx: ServerRequestContext[Any, Any]) -> Principal:
         headers: Mapping[str, str] = getattr(ctx.request, "headers", None) or {}
-        principal = await gateway.authenticator.authenticate(
-            bearer_token(headers.get("authorization"))
-        )
+        principal = await principal_from_headers(gateway, headers)
         if principal.kind is not TokenKind.AGENT:
             raise ActionNotAllowedError(AGENT_ONLY)
         return principal

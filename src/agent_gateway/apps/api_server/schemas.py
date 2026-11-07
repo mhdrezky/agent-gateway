@@ -14,7 +14,7 @@ from agent_gateway.modules.authorization.models import (
 )
 from agent_gateway.modules.credentials.models import CredentialType
 from agent_gateway.modules.execution.models import Execution
-from agent_gateway.modules.identity.models import AgentStatus, Token, TokenKind
+from agent_gateway.modules.identity.models import AgentStatus, Token, TokenKind, UserIdentity
 from agent_gateway.modules.resources.models import ResourceType
 
 
@@ -42,6 +42,7 @@ class WhoAmI(StrictModel):
     token_id: str
     agent_id: str | None
     roles: tuple[str, ...]
+    user: UserIdentity | None = None
 
 
 class ActionInfo(StrictModel):

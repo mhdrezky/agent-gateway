@@ -2,6 +2,7 @@
 
 import contextlib
 from collections import defaultdict, deque
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from typing import Annotated
 
@@ -20,6 +21,8 @@ from agent_gateway.modules.identity.models import Principal
 from agent_gateway.runtime import Gateway
 
 WINDOW = timedelta(minutes=1)
+# The signed-in user's OIDC access token, sent by apps that call for a user (SPEC §9.4).
+USER_TOKEN_HEADER = "x-user-token"
 
 
 class FailureLimiter:
@@ -58,23 +61,30 @@ def bearer_token(authorization: str | None) -> str:
     return raw.strip()
 
 
+async def principal_from_headers(gateway: Gateway, headers: Mapping[str, str]) -> Principal:
+    """The agent of ``Authorization``, acting for the user of ``X-User-Token`` if present."""
+    principal = await gateway.authenticator.authenticate(bearer_token(headers.get("authorization")))
+    user_token = headers.get(USER_TOKEN_HEADER)
+    if user_token is not None:
+        principal = await gateway.users.on_behalf_of(principal, user_token.strip())
+    return principal
+
+
 async def authenticate_request(
     request: Request, gateway: Gateway, limiter: FailureLimiter, token: str | None = None
 ) -> Principal:
-    """Rate-limited authentication with failures audited. Used by REST, ``/mcp``, and the
-    admin UI login. ``token`` defaults to the request's ``Authorization: Bearer`` header.
+    """Rate-limited authentication with failures audited. Used by REST, MCP, and the
+    admin UI login. Without ``token`` it reads the request's ``Authorization: Bearer`` and
+    ``X-User-Token`` headers.
     """
     client = request.client.host if request.client else "unknown"
     limiter.check(client)
     try:
-        raw = (
-            token.strip()
-            if token is not None
-            else bearer_token(request.headers.get("authorization"))
-        )
-        if not raw:
+        if token is None:
+            return await principal_from_headers(gateway, request.headers)
+        if not token.strip():
             raise AuthenticationError(AUTH_FAILED_MESSAGE)
-        return await gateway.authenticator.authenticate(raw)
+        return await gateway.authenticator.authenticate(token.strip())
     except AuthenticationError:
         limiter.record(client)
         # Auditing a failure must never turn a 401 into a 503.
@@ -92,8 +102,9 @@ async def authenticate_request(
 async def current_principal(
     request: Request,
     gateway: GatewayDep,
-    # Declared so the header shows up in the OpenAPI schema; read via the request.
+    # Declared so the headers show up in the OpenAPI schema; read via the request.
     authorization: Annotated[str | None, Header()] = None,
+    x_user_token: Annotated[str | None, Header()] = None,
 ) -> Principal:
     return await authenticate_request(request, gateway, request.app.state.limiter)
 

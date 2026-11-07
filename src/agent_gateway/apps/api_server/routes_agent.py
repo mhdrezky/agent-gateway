@@ -40,6 +40,7 @@ async def whoami(principal: PrincipalDep) -> WhoAmI:
         token_id=principal.token_id,
         agent_id=principal.agent_id,
         roles=principal.roles,
+        user=principal.user,
     )
 
 

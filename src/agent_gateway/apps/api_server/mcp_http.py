@@ -17,7 +17,11 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from agent_gateway.apps.api_server.deps import FailureLimiter, authenticate_request, bearer_token
+from agent_gateway.apps.api_server.deps import (
+    FailureLimiter,
+    authenticate_request,
+    principal_from_headers,
+)
 from agent_gateway.apps.api_server.views import action_infos, resource_infos
 from agent_gateway.common.errors import ActionNotAllowedError, GatewayError, InvalidParamsError
 from agent_gateway.modules.execution.models import ExecutionRequest
@@ -48,9 +52,7 @@ def build_mcp_server(gateway: Gateway) -> MCPServer:
 
     async def agent(ctx: Context) -> Principal:
         headers: Mapping[str, str] = ctx.headers or {}
-        principal = await gateway.authenticator.authenticate(
-            bearer_token(headers.get("authorization"))
-        )
+        principal = await principal_from_headers(gateway, headers)
         if principal.kind is not TokenKind.AGENT:
             raise ActionNotAllowedError(AGENT_ONLY)
         return principal

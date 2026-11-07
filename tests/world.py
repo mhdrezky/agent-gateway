@@ -30,6 +30,7 @@ from agent_gateway.modules.authorization.models import (
 from agent_gateway.modules.credentials.models import CredentialType, SecretPayload
 from agent_gateway.modules.crypto.keyring import generate_master_key
 from agent_gateway.modules.identity.models import TokenKind
+from agent_gateway.modules.identity.users import JwksSource
 from agent_gateway.modules.resources.models import ResourceType
 from agent_gateway.runtime import Gateway, build_gateway
 from tests.fakes.brokers import FakeBroker
@@ -130,9 +131,11 @@ def settings(tmp_path: Path) -> Settings:
     )
 
 
-async def build_world(settings: Settings, *, approval: ApprovalMode) -> World:
+async def build_world(
+    settings: Settings, *, approval: ApprovalMode, jwks: JwksSource | None = None
+) -> World:
     fake = FakeBroker()
-    gateway = build_gateway(settings, brokers=[fake, TestBroker()])
+    gateway = build_gateway(settings, brokers=[fake, TestBroker()], jwks=jwks)
     await gateway.start(background=False)
     admin = gateway.admin
 

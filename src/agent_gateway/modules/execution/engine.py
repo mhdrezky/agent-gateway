@@ -103,7 +103,11 @@ class GatewayExecutionEngine:
         actor = Actor(type=ActorType.AGENT, id=agent_id)
 
         if request.idempotency_key is not None:
-            existing = await self._find_idempotent(agent_id, request.idempotency_key)
+            existing = await self._find_idempotent(
+                agent_id,
+                principal.user.subject if principal.user else None,
+                request.idempotency_key,
+            )
             if existing is not None:
                 return existing
 
@@ -136,6 +140,7 @@ class GatewayExecutionEngine:
         execution = Execution(
             id=new_id(IdPrefix.EXECUTION),
             agent_id=agent_id,
+            user_subject=principal.user.subject if principal.user else None,
             action=request.action,
             resource_id=resource.id,
             params=normalized,
@@ -145,7 +150,12 @@ class GatewayExecutionEngine:
             decision=decision,
             created_at=self._clock.now(),
         )
-        await self._record(AuditEventType.EXECUTION_REQUESTED, execution, actor)
+        await self._record(
+            AuditEventType.EXECUTION_REQUESTED,
+            execution,
+            actor,
+            {"user": execution.user_subject} if execution.user_subject else None,
+        )
 
         if not decision.allowed:
             denied = execution.model_copy(
@@ -425,10 +435,16 @@ class GatewayExecutionEngine:
 
     # ---- helpers ------------------------------------------------------------------------
 
-    async def _find_idempotent(self, agent_id: str, key: str) -> Execution | None:
+    async def _find_idempotent(
+        self, agent_id: str, user_subject: str | None, key: str
+    ) -> Execution | None:
         since = self._clock.now() - IDEMPOTENCY_WINDOW
         for execution in await self._executions.recent(since=since):
-            if execution.agent_id == agent_id and execution.idempotency_key == key:
+            if (
+                execution.agent_id == agent_id
+                and execution.user_subject == user_subject
+                and execution.idempotency_key == key
+            ):
                 return execution
         return None
 

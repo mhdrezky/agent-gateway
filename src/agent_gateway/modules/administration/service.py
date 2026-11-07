@@ -46,6 +46,8 @@ from agent_gateway.modules.identity.models import (
     Principal,
     Token,
     TokenKind,
+    User,
+    UserMatch,
 )
 from agent_gateway.modules.identity.ports import IdentityService
 from agent_gateway.modules.resources.models import Resource, ResourceType
@@ -69,7 +71,9 @@ class AdminService:
         audit: AuditLog,
         clock: Clock,
         elevations: ElevationService | None = None,
+        users: Collection[User] | None = None,
     ) -> None:
+        self._users = users
         self._identity = identity
         self._resources = resources
         self._credentials = credentials
@@ -295,6 +299,37 @@ class AdminService:
         deleted = await self._policies.delete(policy_id)
         if deleted:
             await self._record(actor, AuditEventType.POLICY_DELETED, {"policy_id": policy_id})
+        return deleted
+
+    # ---- users (OIDC subject or group → roles, SPEC §8.9) ---------------------------------
+
+    def _user_store(self) -> Collection[User]:
+        if self._users is None:
+            raise NotFoundError("this gateway has no user store")
+        return self._users
+
+    async def list_users(self, actor: Principal) -> list[User]:
+        _require_admin(actor)
+        return sorted(await self._user_store().all(), key=lambda u: u.id)
+
+    async def add_user(self, actor: Principal, match: UserMatch, roles: Sequence[str]) -> User:
+        _require_admin(actor)
+        user = User(id=new_id(IdPrefix.USER), match=match, roles=tuple(dict.fromkeys(roles)))
+        await self._user_store().put(user)
+        await self._record(
+            actor,
+            AuditEventType.USER_UPDATED,
+            {"user_id": user.id, **match.model_dump(exclude_none=True), "roles": list(user.roles)},
+        )
+        return user
+
+    async def delete_user(self, actor: Principal, user_id: str) -> bool:
+        _require_admin(actor)
+        deleted = await self._user_store().delete(user_id)
+        if deleted:
+            await self._record(
+                actor, AuditEventType.USER_UPDATED, {"user_id": user_id, "deleted": True}
+            )
         return deleted
 
     # ---- approvals and audit --------------------------------------------------------------

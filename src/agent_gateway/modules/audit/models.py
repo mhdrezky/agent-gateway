@@ -25,6 +25,7 @@ class AuditEventType(StrEnum):
     CREDENTIAL_ROTATED = "credential.rotated"
     CREDENTIAL_DELETED = "credential.deleted"
     ROLE_UPDATED = "role.updated"
+    USER_UPDATED = "user.updated"
     POLICY_CREATED = "policy.created"
     POLICY_UPDATED = "policy.updated"
     POLICY_DELETED = "policy.deleted"

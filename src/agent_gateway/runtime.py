@@ -35,8 +35,9 @@ from agent_gateway.modules.elevation.service import ElevationService
 from agent_gateway.modules.execution.engine import GatewayExecutionEngine
 from agent_gateway.modules.execution.store import FileExecutionStore
 from agent_gateway.modules.identity.authenticator import TokenAuthenticator
-from agent_gateway.modules.identity.models import Agent, Token
+from agent_gateway.modules.identity.models import Agent, Token, User
 from agent_gateway.modules.identity.service import IdentityManager
+from agent_gateway.modules.identity.users import JwksSource, UserDirectory, build_user_directory
 from agent_gateway.modules.resources.models import Resource, ResourceType
 from agent_gateway.modules.resources.registry import StoredResourceRegistry
 from agent_gateway.modules.storage.atomic import cleanup_stale_temp_files
@@ -61,6 +62,7 @@ class Gateway:
     registry: InMemoryActionRegistry
     audit: FileAuditLog
     authenticator: TokenAuthenticator
+    users: UserDirectory
     identity: IdentityManager
     engine: GatewayExecutionEngine
     admin: AdminService
@@ -107,6 +109,7 @@ def build_gateway(
     brokers: Sequence[Broker] | None = None,
     keyring: KeyRing | None = None,
     clock: Clock | None = None,
+    jwks: JwksSource | None = None,
 ) -> Gateway:
     clock = clock or SystemClock()
     keyring = keyring or MasterKeyRing.from_file(settings.master_key_file)
@@ -124,6 +127,7 @@ def build_gateway(
     elevations_data = JsonCollection(var / "elevations.json", Elevation, locker=locker, clock=clock)
 
     resources_data = JsonCollection(var / "resources.json", Resource, locker=locker, clock=clock)
+    users_data = JsonCollection(var / "users.json", User, locker=locker, clock=clock)
 
     registry = InMemoryActionRegistry(disabled=settings.actions.disabled)
     schemas: dict[ResourceType, type[BaseModel]] = {}
@@ -134,6 +138,7 @@ def build_gateway(
     audit = FileAuditLog(var / "audit", locker, clock)
     identity = IdentityManager(agents, tokens, keyring, clock=clock)
     authenticator = TokenAuthenticator(agents, tokens, keyring, clock=clock)
+    users = build_user_directory(users_data, settings.users.oidc, source=jwks, clock=clock)
     resources = StoredResourceRegistry(resources_data, schemas)
     credentials = EncryptedCredentialStore(
         credential_meta,
@@ -169,6 +174,7 @@ def build_gateway(
         audit=audit,
         clock=clock,
         elevations=elevations,
+        users=users_data,
     )
     return Gateway(
         settings=settings,
@@ -182,10 +188,12 @@ def build_gateway(
             approvals_data,
             resources_data,
             elevations_data,
+            users_data,
         ],
         registry=registry,
         audit=audit,
         authenticator=authenticator,
+        users=users,
         identity=identity,
         engine=engine,
         admin=admin,

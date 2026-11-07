@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 DEFAULT_CONFIG_FILE = Path("config/gateway.yaml")
@@ -63,6 +63,36 @@ class BrokerSettings(_Section):
     docker: DockerBrokerSettings = Field(default_factory=DockerBrokerSettings)
 
 
+# Asymmetric only: with HMAC algorithms a public JWKS key would double as a signing secret.
+OIDC_ALGORITHMS = frozenset(
+    {"RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512", "EdDSA"}
+)
+
+
+class OidcSettings(_Section):
+    # The exact ``iss`` claim expected; may differ from the host ``jwks_url`` is fetched from.
+    issuer: str = Field(min_length=1)
+    audience: str = Field(min_length=1)
+    jwks_url: str = Field(min_length=1)
+    groups_claim: str = "groups"
+    algorithms: list[str] = Field(default_factory=lambda: ["RS256", "ES256"], min_length=1)
+    leeway_seconds: int = Field(default=30, ge=0, le=300)
+    jwks_cache_seconds: int = Field(default=300, ge=10, le=86400)
+
+    @field_validator("algorithms")
+    @classmethod
+    def _asymmetric(cls, value: list[str]) -> list[str]:
+        unknown = sorted(set(value) - OIDC_ALGORITHMS)
+        if unknown:
+            raise ValueError(f"unsupported OIDC algorithms: {', '.join(unknown)}")
+        return value
+
+
+class UserSettings(_Section):
+    # Without OIDC settings every X-User-Token is refused (SPEC §9.4).
+    oidc: OidcSettings | None = None
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="AGW_",
@@ -79,6 +109,7 @@ class Settings(BaseSettings):
     rate_limit: RateLimitSettings = Field(default_factory=RateLimitSettings)
     actions: ActionSettings = Field(default_factory=ActionSettings)
     brokers: BrokerSettings = Field(default_factory=BrokerSettings)
+    users: UserSettings = Field(default_factory=UserSettings)
 
     @classmethod
     def settings_customise_sources(

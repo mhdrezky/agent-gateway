@@ -29,7 +29,7 @@ from agent_gateway.modules.authorization.models import (
 )
 from agent_gateway.modules.credentials.models import CredentialType, SecretPayload
 from agent_gateway.modules.crypto.keyring import generate_master_key
-from agent_gateway.modules.identity.models import AgentStatus, IssuedToken, TokenKind
+from agent_gateway.modules.identity.models import AgentStatus, IssuedToken, TokenKind, UserMatch
 from agent_gateway.modules.resources.models import Resource, ResourceType
 from agent_gateway.runtime import Gateway, build_gateway
 
@@ -40,6 +40,7 @@ resource_app = typer.Typer(help="Manage resources.", no_args_is_help=True)
 credential_app = typer.Typer(help="Manage credentials (write-only).", no_args_is_help=True)
 role_app = typer.Typer(help="Manage roles.", no_args_is_help=True)
 policy_app = typer.Typer(help="Manage policies.", no_args_is_help=True)
+user_app = typer.Typer(help="Map OIDC users to roles (users.json).", no_args_is_help=True)
 approvals_app = typer.Typer(help="Review pending approvals.", no_args_is_help=True)
 audit_app = typer.Typer(help="Inspect the audit log.", no_args_is_help=True)
 elevation_app = typer.Typer(
@@ -52,6 +53,7 @@ for sub, name in [
     (credential_app, "credential"),
     (role_app, "role"),
     (policy_app, "policy"),
+    (user_app, "user"),
     (approvals_app, "approvals"),
     (audit_app, "audit"),
     (elevation_app, "elevation"),
@@ -444,6 +446,36 @@ def policy_list(config: ConfigOption = None) -> None:
 @policy_app.command("delete")
 def policy_delete(policy_id: str, config: ConfigOption = None) -> None:
     deleted = _run(config, lambda gw: gw.admin.delete_policy(CLI_PRINCIPAL, policy_id))
+    typer.echo("deleted" if deleted else "not found")
+
+
+# ---- users (OIDC subject or group → roles) ----------------------------------------------
+
+
+@user_app.command("add")
+def user_add(
+    role: Annotated[list[str], typer.Option("--role", "-r")],
+    subject: Annotated[str | None, typer.Option(help="The token's sub claim.")] = None,
+    group: Annotated[str | None, typer.Option(help="A value of the groups claim.")] = None,
+    config: ConfigOption = None,
+) -> None:
+    if (subject is None) == (group is None):
+        typer.secho(
+            "error: give exactly one of --subject or --group", fg=typer.colors.RED, err=True
+        )
+        raise typer.Exit(1)
+    match = UserMatch(subject=subject, group=group)
+    _print(_run(config, lambda gw: gw.admin.add_user(CLI_PRINCIPAL, match, role)))
+
+
+@user_app.command("list")
+def user_list(config: ConfigOption = None) -> None:
+    _print(_run(config, lambda gw: gw.admin.list_users(CLI_PRINCIPAL)))
+
+
+@user_app.command("delete")
+def user_delete(user_id: str, config: ConfigOption = None) -> None:
+    deleted = _run(config, lambda gw: gw.admin.delete_user(CLI_PRINCIPAL, user_id))
     typer.echo("deleted" if deleted else "not found")
 
 

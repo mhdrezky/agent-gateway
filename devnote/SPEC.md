@@ -219,6 +219,7 @@ var/
 ├── credentials/
 │   └── cred_<id>.bin           # envelope terenkripsi
 ├── approvals.json
+├── users.json                  # user OIDC → role (fase 4, §8.9)
 ├── executions/
 │   └── 2026-10/exe_<id>.json   # satu file per eksekusi
 ├── audit/
@@ -453,6 +454,8 @@ Pola action mendukung wildcard `*` hanya di segmen terakhir.
 
 `status`: `pending_approval` → `approved` → `running` → `succeeded` | `failed`; atau `denied` | `rejected` | `expired`.
 
+Fase 4: `user_subject` (opsional, default `null`) berisi `sub` user bila execution diminta atas nama user (§9.4). Field opsional, jadi execution fase 2 tetap terbaca tanpa migrasi.
+
 ### 8.8 Approval (`approvals.json`)
 
 ```json
@@ -468,6 +471,23 @@ Pola action mendukung wildcard `*` hanya di segmen terakhir.
   "reason": null
 }
 ```
+
+### 8.9 User (`users.json`, fase 4)
+
+Catatan gateway tentang siapa boleh apa untuk user aplikasi (kontrak `agentgate-gateway/1` §8). Gateway tidak menyimpan nama user atau password; ia hanya mencocokkan klaim token OIDC yang sudah diverifikasi.
+
+```json
+{
+  "id": "usr_01JB8...",
+  "match": { "group": "staff" },
+  "roles": ["staff"]
+}
+```
+
+- `match` berisi tepat satu dari `subject` (klaim `sub` sama persis) atau `group` (ada di klaim grup token).
+- Role user = gabungan role semua item yang cocok. Tidak ada yang cocok → role kosong (bukan error).
+- File baru; `var/` fase 2 tanpa `users.json` tetap terbaca (koleksi kosong).
+- Dikelola admin: `agw user add --group staff --role staff`, `agw user add --subject <sub> --role author`, `agw user list`, `agw user delete <usr_id>` (nanti juga `agw apply`, slice 9). Setiap perubahan diaudit `user.updated`.
 
 ## 9. Authentication
 
@@ -495,6 +515,19 @@ agw_<token_id>_<secret>        dengan token_id = tok_<ULID>
 ### 9.3 Rate limiting
 
 In-memory token bucket per token dan per IP untuk kegagalan autentikasi (default 10 gagal/menit per IP → `429`).
+
+### 9.4 Identitas user (`X-User-Token`, fase 4)
+
+Aplikasi yang memanggil gateway untuk seorang user (agentgate) mengirim access token OIDC user itu apa adanya di header `X-User-Token`, di samping token agent di `Authorization` (`modules/identity/users.py`).
+
+1. Header hanya diterima bersama token **agent** yang valid. Bersama token admin → `403`.
+2. Verifikasi JWT: signature dengan kunci dari JWKS (`users.oidc.jwks_url`), algoritma dari daftar yang diizinkan (default `RS256`, `ES256`; `none` dan HMAC selalu ditolak), `iss` = `users.oidc.issuer`, `aud` memuat `users.oidc.audience`, `exp` wajib dan belum lewat (leeway `users.oidc.leeway_seconds`), `sub` wajib.
+3. JWKS di-cache (`users.oidc.jwks_cache_seconds`); `kid` yang tidak dikenal memicu satu kali refresh, paling sering sekali per 30 detik.
+4. Gagal verifikasi, atau header ada padahal `users.oidc` tidak dikonfigurasi → `401 unauthenticated` dengan pesan generik, dihitung rate limit dan diaudit `auth.failed` seperti token agent.
+5. Subject dan grup (klaim `users.oidc.groups_claim`, default `groups`) dicocokkan ke `users.json` (§8.9). Hasilnya principal **user atas nama agent**: `Principal.user = {subject, user_ids, roles}` di samping identitas agent.
+6. Tanpa header, principal persis seperti fase 2 (D14).
+
+Di slice 2 identitas user baru dibawa dan dicatat (`GET /v1/whoami`, field `user_subject` pada execution, detail audit `execution.requested`); pembatasan scope user ∩ agent ada di slice 3 (§10).
 
 ## 10. Authorization
 
@@ -701,7 +734,7 @@ Satu baris JSON per event di `var/audit/<yyyy-mm-dd>.jsonl`:
 
 ### 14.2 Event
 
-`auth.failed`, `token.created`, `token.revoked`, `agent.created`, `agent.updated`, `resource.*`, `credential.created`, `credential.rotated`, `policy.*`, `execution.requested`, `execution.denied`, `execution.rejected`, `approval.requested`, `approval.approved`, `approval.rejected`, `approval.expired`, `execution.started`, `execution.succeeded`, `execution.failed`.
+`auth.failed`, `token.created`, `token.revoked`, `agent.created`, `agent.updated`, `resource.*`, `credential.created`, `credential.rotated`, `policy.*`, `user.updated` (fase 4), `execution.requested`, `execution.denied`, `execution.rejected`, `approval.requested`, `approval.approved`, `approval.rejected`, `approval.expired`, `execution.started`, `execution.succeeded`, `execution.failed`.
 
 ### 14.3 Verifikasi
 
@@ -898,6 +931,15 @@ brokers:
   docker:
     enabled: false        # mount Docker socket = akses root ke host; aktifkan secara sadar
     socket: unix:///var/run/docker.sock
+users:
+  oidc:                   # opsional; tanpa ini X-User-Token selalu ditolak (§9.4)
+    issuer: https://idp.example.com/realms/company   # nilai klaim iss yang diharapkan
+    audience: agentgate
+    jwks_url: http://idp:8080/realms/company/protocol/openid-connect/certs
+    groups_claim: groups
+    algorithms: [RS256, ES256]
+    leeway_seconds: 30
+    jwks_cache_seconds: 300
 ```
 
 Setiap nilai bisa di-override dengan env `AGW_<SECTION>__<KEY>` (contoh `AGW_APPROVALS__TTL_MINUTES=30`). Konfigurasi divalidasi dengan Pydantic Settings saat start.
@@ -1055,7 +1097,7 @@ Slice, masing-masing di branch sendiri, dengan SPEC diubah lebih dulu:
 | # | Slice | Isi |
 | - | ----- | --- |
 | 1 | MCP Streamable HTTP | Endpoint `/mcp/actions` dengan bearer token agent, di samping `/mcp` dan stdio: satu tool per action, `resource_id` enum, hasil `ToolOutcome` (§16). Plus `GET /v1/contract` |
-| 2 | Identitas user | Verifikasi `X-User-Token` (OIDC: JWKS, `iss`, `aud`, `exp`), `users.json` (subject/grup → role), principal *user atas nama agent* |
+| 2 | Identitas user | Verifikasi `X-User-Token` (OIDC: JWKS, `iss`, `aud`, `exp`), `users.json` (subject/grup → role), principal *user atas nama agent*, CLI `agw user` (§8.9, §9.4) |
 | 3 | Otorisasi delegasi | Scope = role user ∩ role agent; policy subject `user` dan `user_role` |
 | 4 | Approval `requester` | Mode approval baru yang diputuskan oleh user peminta; REST `GET /v1/approvals/mine`, `POST /v1/approvals/{id}/decide` |
 | 5 | Tool profile MCP | Melengkapi `/mcp/actions` dari slice 1: anotasi `readOnlyHint` / `destructiveHint`, `_meta["agentgate/write"]`, daftar tool mengikuti scope user ∩ agent |
