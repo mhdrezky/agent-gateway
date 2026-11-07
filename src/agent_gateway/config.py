@@ -59,8 +59,14 @@ class DockerBrokerSettings(_Section):
     socket: str = "unix:///var/run/docker.sock"
 
 
+class SmtpBrokerSettings(_Section):
+    # Off by default: only the instance that sends mail (agentgate) turns mail.send on.
+    enabled: bool = False
+
+
 class BrokerSettings(_Section):
     docker: DockerBrokerSettings = Field(default_factory=DockerBrokerSettings)
+    smtp: SmtpBrokerSettings = Field(default_factory=SmtpBrokerSettings)
 
 
 # Asymmetric only: with HMAC algorithms a public JWKS key would double as a signing secret.

@@ -1,0 +1,21 @@
+# Mail targets for `pytest -m broker tests/broker/test_smtp_live.py`. See README.md.
+# Own project name and host ports, so it never collides with the agentgate dev stack
+# (which runs Mailpit on 1025/8025).
+name: agw-broker-smtp
+
+services:
+  # Plain SMTP, no STARTTLS offered: delivery is checked through the HTTP API.
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "127.0.0.1:11025:1025"
+      - "127.0.0.1:18025:8025"
+
+  # Offers STARTTLS with a self-signed certificate the broker must not trust.
+  mailpit-tls:
+    image: axllent/mailpit:latest
+    environment:
+      MP_SMTP_TLS_CERT: "sans:localhost"
+      MP_SMTP_TLS_KEY: "sans:localhost"
+    ports:
+      - "127.0.0.1:11026:1025"

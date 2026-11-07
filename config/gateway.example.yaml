@@ -30,3 +30,5 @@ brokers:
   docker:
     enabled: false       # mounting the Docker socket is root-equivalent on the host
     socket: unix:///var/run/docker.sock
+  smtp:
+    enabled: false       # mail.send (SPEC §11.4); only on the instance that sends mail
