@@ -34,6 +34,7 @@ ECHO_ACTION = ActionDefinition(
     description="Return the message unchanged.",
     risk=RiskLevel.LOW,
     input_model=EchoParams,
+    read_only=True,
 )
 
 

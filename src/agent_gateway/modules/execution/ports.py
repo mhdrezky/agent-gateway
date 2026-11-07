@@ -64,3 +64,7 @@ class ExecutionEngine(Protocol):
     ) -> tuple[Approval, Execution]:
         """Confirm (re-authorize, run, and wait) or reject one of those approvals."""
         ...
+
+    async def held_for_requester(self, principal: Principal) -> set[str]:
+        """Action ids whose call may wait for this user's confirmation (SPEC §16)."""
+        ...

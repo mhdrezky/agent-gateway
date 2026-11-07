@@ -53,6 +53,17 @@ def _action(**overrides: object) -> ActionDefinition:
     return ActionDefinition(**fields)  # type: ignore[arg-type]
 
 
+def test_actions_change_something_unless_declared_read_only() -> None:
+    assert _action().read_only is False
+    assert _action(read_only=True).read_only is True
+
+
+def test_a_privileged_action_cannot_be_read_only() -> None:
+    _action(risk=RiskLevel.HIGH, privileged=True)
+    with pytest.raises(ValueError, match="cannot be read-only"):
+        _action(risk=RiskLevel.HIGH, privileged=True, read_only=True)
+
+
 def test_action_definition_valid() -> None:
     action = _action()
     assert action.params_schema()["properties"] == {

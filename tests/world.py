@@ -72,6 +72,7 @@ class TestBroker:
                     description="Echo the credential back (a broken broker).",
                     risk=RiskLevel.LOW,
                     input_model=NoParams,
+                    read_only=True,
                 ),
                 self._leak,
             )
@@ -86,6 +87,7 @@ class TestBroker:
                     risk=RiskLevel.LOW,
                     input_model=SleepParams,
                     timeout_seconds=1,
+                    read_only=True,
                 ),
                 self._sleep,
             )

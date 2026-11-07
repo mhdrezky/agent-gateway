@@ -238,6 +238,32 @@ class GatewayExecutionEngine:
             and (principal.user is None or any(selector_matches(p.resources, r) for p in user_side))
         ]
 
+    async def held_for_requester(self, principal: Principal) -> set[str]:
+        """Action ids a call by ``principal`` may hold for its user to confirm (SPEC §16).
+
+        Empty without a user: nobody can confirm, so the call is denied rather than held.
+        An open elevation window counts, because inside it the call runs straight away.
+        """
+        agent_id = principal.agent_id
+        if principal.user is None or agent_id is None:
+            return set()
+        resources = await self.visible_resources(principal)
+        held: set[str] = set()
+        for action in await self.visible_actions(principal):
+            for resource in resources:
+                if resource.type is not action.definition.resource_type:
+                    continue
+                decision = await self._authorize(principal, action, resource)
+                decision = await self._apply_elevation(decision, action, agent_id, resource.id)
+                if (
+                    decision.allowed
+                    and decision.approval_required
+                    and decision.approver is Approver.REQUESTER
+                ):
+                    held.add(action.definition.id)
+                    break
+        return held
+
     # ---- approvals held for the requesting user (SPEC §13b) ------------------------------
 
     async def my_approvals(self, principal: Principal) -> list[tuple[Approval, Execution]]:

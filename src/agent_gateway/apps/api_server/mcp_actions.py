@@ -26,6 +26,8 @@ from agent_gateway.runtime import Gateway
 
 MCP_ACTIONS_PATH = "/mcp/actions"
 RESOURCE_ARG = "resource_id"
+# True when a call of this tool may wait for the requesting user (contract §4.1, §6).
+WRITE_META = "agentgate/write"
 INSTRUCTIONS = (
     "Each tool runs one infrastructure action through Agent Gateway. "
     "A result with status 'pending' waits for a person to confirm it; do not call it again."
@@ -37,7 +39,7 @@ def tool_name(action_id: str) -> str:
     return action_id.replace(".", "_")
 
 
-def _tool(action: RegisteredAction, resource_ids: list[str]) -> types.Tool | None:
+def _tool(action: RegisteredAction, resource_ids: list[str], *, write: bool) -> types.Tool | None:
     schema = action.definition.params_schema()
     properties: dict[str, Any] = dict(schema.get("properties", {}))
     if RESOURCE_ARG in properties:
@@ -53,23 +55,27 @@ def _tool(action: RegisteredAction, resource_ids: list[str]) -> types.Tool | Non
         "required": [RESOURCE_ARG, *schema.get("required", [])],
     }
     input_schema.pop("title", None)
+    read_only = action.definition.read_only
     return types.Tool(
         name=tool_name(action.definition.id),
         description=action.definition.description,
         input_schema=input_schema,
+        annotations=types.ToolAnnotations(read_only_hint=read_only, destructive_hint=not read_only),
+        meta={WRITE_META: write},
     )
 
 
 async def _tools(gateway: Gateway, principal: Principal) -> dict[str, tuple[str, types.Tool]]:
     """Tool name → (action id, tool) for every action the caller can target somewhere."""
     resources = await gateway.engine.visible_resources(principal)
+    held = await gateway.engine.held_for_requester(principal)
     tools: dict[str, tuple[str, types.Tool]] = {}
     ambiguous: set[str] = set()
     for action in sorted(
         await gateway.engine.visible_actions(principal), key=lambda a: a.definition.id
     ):
         ids = sorted(r.id for r in resources if r.type is action.definition.resource_type)
-        tool = _tool(action, ids) if ids else None
+        tool = _tool(action, ids, write=action.definition.id in held) if ids else None
         if tool is None:
             continue
         if tool.name in tools:

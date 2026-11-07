@@ -35,6 +35,9 @@ class ActionDefinition:
     # Privileged actions (e.g. ssh.sudo) are never covered by a wildcard: a role and a
     # policy must name them exactly, so granting "ssh.*" never grants them by accident.
     privileged: bool = False
+    # A read never changes its target. Unmarked actions count as writes, so a new action
+    # is never advertised as read-only by accident (SPEC §11.1, §16).
+    read_only: bool = False
 
     def __post_init__(self) -> None:
         if not ACTION_ID_PATTERN.fullmatch(self.id):
@@ -45,6 +48,10 @@ class ActionDefinition:
             raise ValueError(f"timeout_seconds must be in 1..{MAX_TIMEOUT_SECONDS}")
         if self.privileged and self.risk not in (RiskLevel.HIGH, RiskLevel.CRITICAL):
             raise ValueError(f"privileged action {self.id!r} must be high or critical risk")
+        if self.privileged and self.read_only:
+            raise ValueError(
+                f"privileged action {self.id!r} changes things, so it cannot be read-only"
+            )
         if self.input_model.model_config.get("extra") != "forbid":
             raise ValueError(f"input model of {self.id!r} must set extra='forbid'")
 

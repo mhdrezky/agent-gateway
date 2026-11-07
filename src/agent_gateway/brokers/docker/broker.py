@@ -112,6 +112,7 @@ class DockerBroker:
             "List containers managed by the gateway (label agw.managed=true or allowlisted)."
         ),
         input_model=NoParams,
+        read_only=True,
     )
     async def container_list(self, ctx: ActionContext, params: NoParams) -> ActionResult:
         async def body() -> ActionResult:
@@ -142,6 +143,7 @@ class DockerBroker:
         risk=RiskLevel.LOW,
         description="Show the last log lines (at most 500) of a managed container.",
         input_model=LogsParams,
+        read_only=True,
     )
     async def container_logs(self, ctx: ActionContext, params: LogsParams) -> ActionResult:
         async def body() -> ActionResult:

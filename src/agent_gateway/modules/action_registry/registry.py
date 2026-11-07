@@ -39,6 +39,7 @@ class InMemoryActionRegistry:
         description: str,
         input_model: type[BaseModel],
         timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+        read_only: bool = False,
     ) -> Callable[[ActionHandler], ActionHandler]:
         """Decorator form of :meth:`register` for module-level handlers."""
         mark = mark_action(
@@ -48,6 +49,7 @@ class InMemoryActionRegistry:
             description=description,
             input_model=input_model,
             timeout_seconds=timeout_seconds,
+            read_only=read_only,
         )
 
         def register(fn: ActionHandler) -> ActionHandler:

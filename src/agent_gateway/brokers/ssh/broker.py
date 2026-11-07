@@ -78,6 +78,7 @@ class SshBroker:
         risk=RiskLevel.LOW,
         description="Show uptime, disk usage, and memory usage of the host.",
         input_model=NoParams,
+        read_only=True,
     )
     async def system_info(self, ctx: ActionContext, params: NoParams) -> ActionResult:
         async def body() -> ActionResult:
@@ -106,6 +107,7 @@ class SshBroker:
         risk=RiskLevel.LOW,
         description="Show `systemctl status` of a service listed in the host's allowed_services.",
         input_model=ServiceParams,
+        read_only=True,
     )
     async def service_status(self, ctx: ActionContext, params: ServiceParams) -> ActionResult:
         async def body() -> ActionResult:
@@ -145,6 +147,7 @@ class SshBroker:
             "allowed_services."
         ),
         input_model=LogsParams,
+        read_only=True,
     )
     async def logs_tail(self, ctx: ActionContext, params: LogsParams) -> ActionResult:
         async def body() -> ActionResult:

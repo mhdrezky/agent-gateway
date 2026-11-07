@@ -589,6 +589,7 @@ class ActionDefinition(BaseModel):
     risk: Literal["low", "medium", "high", "critical"]
     input_model: type[BaseModel]  # schema parameter, extra="forbid"
     timeout_seconds: int = 60
+    read_only: bool = False  # True hanya bila action tidak pernah mengubah apa pun
 ```
 
 Action didaftarkan dari kode broker:
@@ -657,6 +658,8 @@ Dengan policy `by_risk` (default), setiap `ssh.sudo` menunggu approval karena ri
 | `docker.container.logs` | docker | low | log container (tail ≤ 500) |
 | `docker.container.restart` | docker | medium | restart container dalam allowlist |
 | `docker.container.stop` | docker | high | stop container dalam allowlist |
+
+`read_only` (default `false`, jadi action baru dianggap mengubah sesuatu) menentukan anotasi tool MCP (§16). Action yang tidak mengubah apa pun: `ssh.system.info`, `ssh.service.status`, `ssh.logs.tail`, `docker.container.list`, `docker.container.logs`. Selain itu adalah tulis, termasuk `ssh.service.restart`, `ssh.sudo`, `docker.container.restart`, dan `docker.container.stop`. Action privileged tidak boleh `read_only`.
 
 SSH broker memakai `asyncssh`, wajib verifikasi `host_key_fingerprint` (tidak ada auto-accept). Koneksi hanya meminta algoritma `host_key_algorithm` (default `ssh-ed25519`), karena server OpenSSH punya beberapa host key dan tanpa batasan ini asyncssh menegosiasikan RSA sehingga fingerprint ed25519 tidak pernah cocok (ditemukan saat uji e2e). Docker broker memakai Docker Engine API; hanya container dengan label `agw.managed=true` atau di allowlist resource yang boleh disentuh.
 
@@ -925,7 +928,8 @@ Untuk aplikasi seperti agentgate yang menyerahkan tool langsung ke model (`apps/
 - `tools/list`: satu tool per action yang tercakup role pemanggil (`ExecutionEngine.visible_actions`), nama = id action dengan `.` → `_` (`sql.query` → `sql_query`, pola `^[a-zA-Z0-9_-]{1,64}$`). `inputSchema` = schema params action ditambah `resource_id` wajib dengan `enum` resource yang terlihat oleh pemanggil dan bertipe sama dengan action. Action tanpa resource yang bisa ditarget tidak dicantumkan. Daftar dihitung per request, jadi selalu sesuai role dan policy saat itu.
 - `tools/call`: memanggil `ExecutionEngine.submit` (P6). Argumen selain `resource_id` menjadi `params`. `structuredContent` = `ToolOutcome` `{status, execution_id, result, summary, error}`: `succeeded` → `ok` (`result` = `data`), `pending_approval` → `pending` (`summary` menyebut action dan resource yang menunggu), `denied` → `denied`, lainnya → `error`. `isError` benar untuk `denied` dan `error`. Error gateway juga menjadi `ToolOutcome` (`denied` untuk `action_not_allowed`, selain itu `error`), dengan pesan aman tanpa secret.
 - Nama tool yang tidak dikenal → `ToolOutcome` `error`, tanpa eksekusi.
-- Anotasi (`readOnlyHint`, `destructiveHint`), `_meta["agentgate/write"]`, dan scope user menyusul di slice 5 dan 2–3 (§20.5).
+- Anotasi: `readOnlyHint` benar bila action `read_only`; `destructiveHint` benar untuk setiap tulis (kontrak §4.1 memperlakukan semua tulis sebagai destruktif). Keduanya sifat action, tidak tergantung policy.
+- `_meta["agentgate/write"]` benar bila panggilan action itu oleh pemanggil ini bisa ditahan untuk konfirmasi user (§13b) pada salah satu resource di `enum`-nya: keputusan `allow` dengan `approver=requester`, sesudah jendela elevation diperhitungkan. Tanpa user nilainya `false` (panggilan seperti itu ditolak, bukan ditahan). Approval admin atau tanpa approval juga `false`.
 - Meta-tool di `/mcp` dan bridge stdio tidak berubah.
 
 ### Bridge stdio (`agw-mcp`, opsional)
@@ -1150,7 +1154,7 @@ Slice, masing-masing di branch sendiri, dengan SPEC diubah lebih dulu:
 | 2 | Identitas user | Verifikasi `X-User-Token` (OIDC: JWKS, `iss`, `aud`, `exp`), `users.json` (subject/grup → role), principal *user atas nama agent*, CLI `agw user` (§8.9, §9.4) |
 | 3 | Otorisasi delegasi | Scope = role user ∩ role agent; policy subject `user` dan `user_role`; visibilitas action, resource, dan execution ikut scope (§10.3) |
 | 4 | Approval `requester` | Mode approval baru yang diputuskan oleh user peminta; REST `GET /v1/approvals/mine`, `POST /v1/approvals/{id}/decide` (§13b) |
-| 5 | Tool profile MCP | Melengkapi `/mcp/actions` dari slice 1: anotasi `readOnlyHint` / `destructiveHint`, `_meta["agentgate/write"]` (daftar tool sudah mengikuti scope user ∩ agent sejak slice 3) |
+| 5 | Tool profile MCP | Melengkapi `/mcp/actions` dari slice 1: anotasi `readOnlyHint` / `destructiveHint`, `_meta["agentgate/write"]` (§16; daftar tool sudah mengikuti scope user ∩ agent sejak slice 3) |
 | 6 | Broker `sql` | Port SQL gate agentgate (satu `SELECT`, tabel yang diizinkan, row cap, `limited`) beserta tesnya. Postgres dulu, T-SQL menyusul |
 | 7 | Broker `smtp` | Port konektor mail agentgate (domain yang diizinkan, STARTTLS), action `mail.send` risk `medium` approval `requester`. Mailpit di compose uji |
 | 8 | Correlation id | Dari `X-Correlation-Id` / `_meta` ke execution dan audit |
