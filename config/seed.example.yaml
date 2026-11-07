@@ -61,7 +61,7 @@ resources:
     tags: ["env:dev"]
     credential: dev-model
     attributes:
-      base_url: http://127.0.0.1:8000/v1
+      base_url: http://127.0.0.1:8000   # server root; the gateway adds /v1/chat/completions
       model_id: demo
 
 policies:
