@@ -660,7 +660,7 @@ Dengan policy `by_risk` (default), setiap `ssh.sudo` menunggu approval karena ri
 | `docker.container.restart` | docker | medium | restart container dalam allowlist |
 | `docker.container.stop` | docker | high | stop container dalam allowlist |
 
-`read_only` (default `false`, jadi action baru dianggap mengubah sesuatu) menentukan anotasi tool MCP (§16). Action yang tidak mengubah apa pun: `ssh.system.info`, `ssh.service.status`, `ssh.logs.tail`, `docker.container.list`, `docker.container.logs`. Selain itu adalah tulis, termasuk `ssh.service.restart`, `ssh.sudo`, `docker.container.restart`, dan `docker.container.stop`. Action privileged tidak boleh `read_only`.
+`read_only` (default `false`, jadi action baru dianggap mengubah sesuatu) menentukan anotasi tool MCP (§16). Action yang tidak mengubah apa pun: `ssh.system.info`, `ssh.service.status`, `ssh.logs.tail`, `docker.container.list`, `docker.container.logs`, `sql.query`. Selain itu adalah tulis, termasuk `ssh.service.restart`, `ssh.sudo`, `docker.container.restart`, dan `docker.container.stop`. Action privileged tidak boleh `read_only`.
 
 SSH broker memakai `asyncssh`, wajib verifikasi `host_key_fingerprint` (tidak ada auto-accept). Koneksi hanya meminta algoritma `host_key_algorithm` (default `ssh-ed25519`), karena server OpenSSH punya beberapa host key dan tanpa batasan ini asyncssh menegosiasikan RSA sehingga fingerprint ed25519 tidak pernah cocok (ditemukan saat uji e2e). Docker broker memakai Docker Engine API; hanya container dengan label `agw.managed=true` atau di allowlist resource yang boleh disentuh.
 

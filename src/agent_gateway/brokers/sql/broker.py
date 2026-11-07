@@ -100,6 +100,7 @@ class SqlBroker:
             "and limited is true when there were more (aggregate in SQL instead)."
         ),
         input_model=QueryParams,
+        read_only=True,
     )
     async def query(self, ctx: ActionContext, params: QueryParams) -> ActionResult:
         async def body() -> ActionResult:

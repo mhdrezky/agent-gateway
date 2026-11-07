@@ -68,6 +68,7 @@ def test_registers_sql_query_as_low_risk() -> None:
     assert registered.definition.risk is RiskLevel.LOW
     assert registered.definition.resource_type is ResourceType.SQL_DATABASE
     assert not registered.definition.privileged
+    assert registered.definition.read_only
 
 
 def test_resource_attribute_schema() -> None:
