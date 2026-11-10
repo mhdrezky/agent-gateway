@@ -192,6 +192,19 @@ async def test_catalog_reads_tables_columns_and_comments(env: dict[str, str]) ->
     assert [c.name for c in tables["customer"].columns] == ["id", "email"]
 
 
+async def test_catalog_lists_a_column_granted_table_with_its_granted_columns_only(
+    env: dict[str, str],
+) -> None:
+    # app_user: SELECT (id, email) only; password_hash is withheld from the reader.
+    tables = await _read(env)
+    assert "app_user" in tables
+    assert [(c.name, c.type) for c in tables["app_user"].columns] == [
+        ("id", "integer"),
+        ("email", "text"),
+    ]
+    assert "password_hash" not in str(tables["app_user"])
+
+
 async def test_catalog_of_another_schema_is_empty(env: dict[str, str]) -> None:
     assert await _read(env, schema_name="nothing_here") == {}
 

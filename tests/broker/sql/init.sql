@@ -39,6 +39,16 @@ GRANT SELECT ON public.product TO agw_reader;
 
 -- Created after the grant above: the reader cannot SELECT it, so the catalog leaves it out.
 CREATE TABLE sample.hidden (id integer PRIMARY KEY);
+-- Readable only through column grants: every column but the password hash. The catalog
+-- lists the table with the granted columns only.
+CREATE TABLE sample.app_user (
+    id integer PRIMARY KEY,
+    email text NOT NULL,
+    password_hash text NOT NULL
+);
+COMMENT ON COLUMN sample.app_user.password_hash IS 'never shown to the reader';
+INSERT INTO sample.app_user VALUES (1, 'someone@example.com', 'x');
+GRANT SELECT (id, email) ON sample.app_user TO agw_reader;
 -- A quoted mixed-case name that allowed_tables cannot hold; the catalog leaves it out too.
 CREATE TABLE sample."MixedCase" (id integer PRIMARY KEY);
 GRANT SELECT ON sample."MixedCase" TO agw_reader;

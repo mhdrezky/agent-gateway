@@ -1,9 +1,10 @@
 """Read the tables of a ``sql_database`` resource for its catalog (SPEC §11.6, `agw sync`).
 
 Runs as the resource's own login in a read-only session, and lists only the tables, views,
-and materialised views of ``schema_name`` that this login may ``SELECT``: the catalog is
-what an admin can usefully grant. Names that are not plain lower-case identifiers are left
-out, because ``allowed_tables`` cannot hold them.
+and materialised views of ``schema_name`` that this login may ``SELECT`` (the whole relation,
+or some of its columns), with only the columns it may select: the catalog is what an admin
+can usefully grant, and never names a column the login cannot read. Names that are not
+plain lower-case identifiers are left out, because ``allowed_tables`` cannot hold them.
 
 The engine is picked from ``attributes.engine``. Only PostgreSQL exists today; T-SQL gets
 its own ``Introspector`` in ``INTROSPECTORS`` (e.g. from ``INFORMATION_SCHEMA.COLUMNS`` and
@@ -32,7 +33,10 @@ log = logging.getLogger(__name__)
 _IDENTIFIER = re.compile(IDENTIFIER_PATTERN)
 
 # Tables (ordinary, partitioned parents, foreign), views, and materialised views; never
-# partitions on their own. One row per column; a table without columns has one NULL row.
+# partitions on their own. A relation counts when the login may SELECT it, or at least one
+# of its columns (a column-level grant, e.g. every column but a password hash); only the
+# columns it may SELECT are listed, so a withheld column never shows up. One row per
+# column; a relation without visible columns has one NULL row.
 POSTGRES_COLUMNS = """
 SELECT c.relname,
        coalesce(obj_description(c.oid, 'pg_class'), ''),
@@ -44,10 +48,11 @@ FROM pg_catalog.pg_class c
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 LEFT JOIN pg_catalog.pg_attribute a
        ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+      AND has_column_privilege(c.oid, a.attnum, 'SELECT')
 WHERE n.nspname = %s
   AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
   AND NOT c.relispartition
-  AND has_table_privilege(c.oid, 'SELECT')
+  AND (has_table_privilege(c.oid, 'SELECT') OR has_any_column_privilege(c.oid, 'SELECT'))
 ORDER BY c.relname, a.attnum
 """
 
