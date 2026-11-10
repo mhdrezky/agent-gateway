@@ -189,6 +189,39 @@ async def test_admin_approvals_are_those_of_the_calling_agent(approvals_aw: Acce
     assert len(static.json()) == 3
 
 
+async def test_an_agent_only_request_is_listed_without_a_subject(
+    approvals_aw: AccessWorld,
+) -> None:
+    """Amendment A1: the calling agent's admin approvals without a user are listed too."""
+    aw = approvals_aw
+    from agent_gateway.modules.authorization.models import (
+        ApprovalMode,
+        PolicyEffect,
+        PolicySubject,
+        ResourceSelector,
+    )
+
+    await aw.w.gateway.admin.create_policy(
+        _static(),
+        subject=PolicySubject(role="operator"),
+        actions=["test.leak"],
+        resources=ResourceSelector(ids=(aw.w.resource_id,)),
+        effect=PolicyEffect.ALLOW,
+        approval=ApprovalMode.ALWAYS,
+    )
+    response = await aw.w.api.post(
+        "/v1/executions",
+        json={"action": "test.leak", "resource_id": aw.w.resource_id, "params": {}},
+        headers=aw.w.agent(),
+    )
+    assert response.status_code == 202, response.text
+    await submit(aw, aw.w.agent(), "priv.sudo")
+    items = await approvals(aw, CAROL)
+    assert [(i["action"], i["requested_by"]) for i in items] == [
+        ("test.leak", {"agent": "claude-ops", "subject": None})
+    ]
+
+
 async def test_another_agents_approval_is_404_and_a_privileged_one_infra_only(
     approvals_aw: AccessWorld,
 ) -> None:

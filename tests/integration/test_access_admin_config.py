@@ -10,7 +10,7 @@ import pytest
 from agent_gateway.config import Settings
 from agent_gateway.modules.administration.service import CLI_PRINCIPAL
 from agent_gateway.modules.authorization.models import Role
-from tests.access_world import ALICE, BOB, CAROL, AccessWorld, build_access_world
+from tests.access_world import ALICE, BOB, CAROL, AccessWorld, EmptyCatalog, build_access_world
 
 Who = tuple[str, list[str]]
 
@@ -269,7 +269,7 @@ async def test_a_table_the_catalog_does_not_list_is_a_problem(aw: AccessWorld) -
 
 
 async def test_tables_are_not_checked_without_a_snapshot(aw: AccessWorld) -> None:
-    aw.w.gateway.access.catalog = _null_catalog()
+    aw.w.gateway.access.catalog = EmptyCatalog()
     desired = await config(aw)
     desired["resource_tables"]["sample"] = ["customer", "salary"]
     assert codes(await plan(aw, desired)) == []
@@ -339,10 +339,6 @@ async def test_a_plan_expires_after_15_minutes(aw: AccessWorld) -> None:
     assert response.json()["error"]["code"] == "plan_expired"
 
 
-async def test_an_unknown_plan_is_404(aw: AccessWorld) -> None:
-    assert (await apply(aw, "pln_nope")).status_code == 404
-
-
 async def test_open_plans_are_listed_for_a_second_admin(aw: AccessWorld) -> None:
     first = await plan(aw, await config(aw), BOB)
     second = await plan(aw, await config(aw), CAROL)
@@ -398,7 +394,105 @@ async def test_the_static_token_may_plan_and_apply(aw: AccessWorld) -> None:
     assert response.status_code == 200, response.text
 
 
-def _null_catalog() -> Any:
-    from agent_gateway.modules.administration.catalog_port import NullCatalog
+# ---- amendment A1 ------------------------------------------------------------------------
 
-    return NullCatalog()
+
+async def test_instance_shows_the_admin_settings(production: AccessWorld) -> None:
+    for headers in (production.as_user(CAROL), production.w.admin()):
+        response = await production.w.api.get("/v1/admin/instance", headers=headers)
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "apply_requires_second_admin": True,
+            "admin_user_roles": ["platform-admin"],
+        }
+    response = await production.w.api.get("/v1/admin/instance", headers=production.as_user(ALICE))
+    assert response.json()["error"]["code"] == "not_admin"
+
+
+async def test_an_unknown_plan_is_plan_not_found(aw: AccessWorld) -> None:
+    for response in (
+        await apply(aw, "pln_nope"),
+        await aw.w.api.post("/v1/admin/config/plans/pln_nope/discard", headers=aw.as_user(CAROL)),
+    ):
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "plan_not_found"
+
+
+async def test_any_admin_discards_an_open_plan_and_it_is_audited(aw: AccessWorld) -> None:
+    planned = await plan(aw, await config(aw), BOB)
+    url = f"/v1/admin/config/plans/{planned['plan_id']}/discard"
+    response = await aw.w.api.post(url, headers=aw.as_user(CAROL))
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "discarded"
+    again = await aw.w.api.post(url, headers=aw.as_user(CAROL))
+    assert again.status_code == 409
+    assert again.json()["error"]["code"] == "plan_not_open"
+    applied = await apply(aw, planned["plan_id"])
+    assert applied.json()["error"]["code"] == "plan_not_open"
+    listed = await aw.w.api.get(
+        "/v1/admin/config/plans", params={"status": "discarded"}, headers=aw.as_user(CAROL)
+    )
+    assert [p["plan_id"] for p in listed.json()] == [planned["plan_id"]]
+    entries = [e for e in await aw.w.gateway.audit.query() if e.event == "access.plan_discarded"]
+    assert len(entries) == 1
+    assert entries[0].actor.id == "u-carol"
+    assert entries[0].details["via_agent"] == aw.w.agent_id
+
+
+async def test_applied_or_expired_plans_cannot_be_discarded(aw: AccessWorld) -> None:
+    applied = await plan(aw, await config(aw))
+    assert (await apply(aw, applied["plan_id"])).status_code == 200
+    expired = await plan(aw, await config(aw))
+    aw.clock.advance(timedelta(minutes=15))
+    for plan_id in (applied["plan_id"], expired["plan_id"]):
+        response = await aw.w.api.post(
+            f"/v1/admin/config/plans/{plan_id}/discard", headers=aw.as_user(CAROL)
+        )
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "plan_not_open"
+
+
+async def test_open_plans_keep_plans_with_problems(aw: AccessWorld) -> None:
+    desired = await config(aw)
+    desired["users"] = []
+    planned = await plan(aw, desired)
+    assert planned["problems"]
+    response = await aw.w.api.get(
+        "/v1/admin/config/plans", params={"status": "open"}, headers=aw.as_user(CAROL)
+    )
+    assert [p["plan_id"] for p in response.json()] == [planned["plan_id"]]
+
+
+async def test_a_user_item_with_an_unknown_id_and_no_match_is_created(aw: AccessWorld) -> None:
+    desired = await config(aw)
+    desired["users"].append(
+        {"id": "usr_FROMANOTHERINSTANCE00000000", "match": {"subject": "u-erin"}, "roles": []}
+    )
+    planned = await plan(aw, desired)
+    assert [(c["kind"], c["name"], c["op"]) for c in planned["changes"]] == [
+        ("user", "subject:u-erin", "create")
+    ]
+    assert (await apply(aw, planned["plan_id"])).status_code == 200
+    created = next(u for u in (await config(aw))["users"] if u["match"].get("subject") == "u-erin")
+    assert created["id"] != "usr_FROMANOTHERINSTANCE00000000"
+    assert created["id"].startswith("usr_")
+
+
+# ---- catalog through an access admin (contract §7) ---------------------------------------
+
+
+async def test_an_access_admin_syncs_and_reads_a_catalog(aw: AccessWorld) -> None:
+    url = f"/v1/admin/resources/{aw.sample_id}"
+    synced = await aw.w.api.post(f"{url}/sync", headers=aw.as_user(CAROL))
+    assert synced.status_code == 200, synced.text
+    assert synced.json()["skipped"] == []
+    catalog = await aw.w.api.get(f"{url}/catalog", headers=aw.as_user(CAROL))
+    assert catalog.json()["resource"] == "sample"
+    assert [t["name"] for t in catalog.json()["tables"]] == ["customer", "product"]
+    entry = [e for e in await aw.w.gateway.audit.query() if e.event == "catalog.synced"][-1]
+    assert (entry.actor.type, entry.actor.id) == ("user", "u-carol")
+    assert entry.details["via_agent"] == aw.w.agent_id
+    # The static token keeps working; a user who is not an admin does not.
+    assert (await aw.w.api.post(f"{url}/sync", headers=aw.w.admin())).status_code == 200
+    denied = await aw.w.api.post(f"{url}/sync", headers=aw.as_user(ALICE))
+    assert denied.json()["error"]["code"] == "not_admin"

@@ -16,14 +16,15 @@ from pydantic import BaseModel
 
 from agent_gateway.brokers.base import Broker
 from agent_gateway.brokers.docker.broker import DockerBroker
+from agent_gateway.brokers.mcp.broker import McpBroker
 from agent_gateway.brokers.smtp.broker import SmtpBroker
 from agent_gateway.brokers.sql.broker import SqlBroker
+from agent_gateway.brokers.sql.introspect import SqlCatalogSource
 from agent_gateway.brokers.ssh.broker import SshBroker
 from agent_gateway.common.clock import Clock, SystemClock
 from agent_gateway.config import Settings
 from agent_gateway.modules.action_registry.registry import InMemoryActionRegistry
 from agent_gateway.modules.administration.access import AccessAdmin, StoredPlan
-from agent_gateway.modules.administration.catalog_port import CatalogPort, NullCatalog
 from agent_gateway.modules.administration.directory import (
     Directory,
     KeycloakDirectory,
@@ -35,6 +36,9 @@ from agent_gateway.modules.approvals.service import ApprovalWorkflow
 from agent_gateway.modules.audit.file_log import FileAuditLog
 from agent_gateway.modules.authorization.engine import DefaultPolicyEngine
 from agent_gateway.modules.authorization.models import Policy, Role
+from agent_gateway.modules.catalog.models import CatalogSnapshot
+from agent_gateway.modules.catalog.ports import CatalogActions, CatalogSource
+from agent_gateway.modules.catalog.service import CatalogService
 from agent_gateway.modules.credentials.models import CredentialMeta
 from agent_gateway.modules.credentials.store import EncryptedCredentialStore
 from agent_gateway.modules.crypto.envelope import AesGcmEnvelopeCipher
@@ -82,6 +86,7 @@ class Gateway:
     access: AccessAdmin
     approvals: ApprovalWorkflow
     executions: FileExecutionStore
+    catalog: CatalogService
     _dispatcher: asyncio.Task[None] | None = field(default=None, init=False)
 
     async def start(self, *, background: bool = True) -> None:
@@ -89,6 +94,8 @@ class Gateway:
         for collection in self.collections:
             await collection.check()
         await asyncio.to_thread(cleanup_stale_temp_files, self.settings.var_dir)
+        # Actions read from catalogs (MCP tools) exist only once their snapshot is loaded.
+        await self.catalog.load_actions()
         for action_id in self.registry.unknown_disabled():
             log.warning("actions.disabled names an unknown action: %s", action_id)
         await self.engine.recover()
@@ -109,6 +116,11 @@ class Gateway:
                 await self.engine.dispatch_approvals()
             except Exception:
                 log.exception("approval dispatch failed")
+            try:
+                # Picks up `agw sync` from the CLI, which runs in another process.
+                await self.catalog.load_actions()
+            except Exception:
+                log.exception("loading catalog actions failed")
             await asyncio.sleep(DISPATCH_INTERVAL_SECONDS)
 
 
@@ -120,7 +132,25 @@ def default_brokers(settings: Settings) -> list[Broker]:
         brokers.append(SqlBroker())
     if settings.brokers.smtp.enabled:
         brokers.append(SmtpBroker())
+    if settings.brokers.mcp.enabled:
+        brokers.append(McpBroker())
     return brokers
+
+
+def catalog_parts(
+    brokers: Sequence[Broker],
+) -> tuple[list[CatalogSource], list[CatalogActions]]:
+    """Catalog sources and action providers for the enabled brokers: SQL tables when the
+    sql broker is on, MCP tools when the mcp broker is on."""
+    sources: list[CatalogSource] = []
+    actions: list[CatalogActions] = []
+    for broker in brokers:
+        if isinstance(broker, SqlBroker):
+            sources.append(SqlCatalogSource())
+        if isinstance(broker, McpBroker):
+            sources.append(broker)
+            actions.append(broker)
+    return sources, actions
 
 
 def build_gateway(
@@ -131,8 +161,8 @@ def build_gateway(
     clock: Clock | None = None,
     jwks: JwksSource | None = None,
     model_transport: httpx.AsyncBaseTransport | None = None,
-    catalog: CatalogPort | None = None,
     directory_transport: httpx.AsyncBaseTransport | None = None,
+    catalog_sources: Sequence[CatalogSource] | None = None,
 ) -> Gateway:
     clock = clock or SystemClock()
     keyring = keyring or MasterKeyRing.from_file(settings.master_key_file)
@@ -152,12 +182,17 @@ def build_gateway(
     resources_data = JsonCollection(var / "resources.json", Resource, locker=locker, clock=clock)
     users_data = JsonCollection(var / "users.json", User, locker=locker, clock=clock)
     plans_data = JsonCollection(var / "access_plans.json", StoredPlan, locker=locker, clock=clock)
+    snapshots = JsonCollection(var / "catalogs.json", CatalogSnapshot, locker=locker, clock=clock)
 
     registry = InMemoryActionRegistry(disabled=settings.actions.disabled)
     schemas: dict[ResourceType, type[BaseModel]] = {ResourceType.MODEL: ModelAttributes}
-    for broker in brokers if brokers is not None else default_brokers(settings):
+    enabled = list(brokers) if brokers is not None else default_brokers(settings)
+    for broker in enabled:
         broker.register(registry)
         schemas.update(broker.resource_attribute_models())
+    sources, catalog_actions = catalog_parts(enabled)
+    if catalog_sources is not None:
+        sources = list(catalog_sources)
 
     audit = FileAuditLog(var / "audit", locker, clock)
     identity = IdentityManager(agents, tokens, keyring, clock=clock)
@@ -173,6 +208,19 @@ def build_gateway(
     )
     approvals = ApprovalWorkflow(approvals_data, audit, clock, settings.approvals)
     elevations = ElevationService(elevations_data, audit, clock)
+    catalog = CatalogService(
+        snapshots=snapshots,
+        resources=resources,
+        credentials=credentials,
+        sources=sources,
+        actions=catalog_actions,
+        registry=registry,
+        audit=audit,
+        clock=clock,
+    )
+    for broker in enabled:
+        if isinstance(broker, SqlBroker):
+            broker.attach_catalog(catalog.removed_tables)
     policy_engine = DefaultPolicyEngine()
     executions = FileExecutionStore(var / "executions", locker=locker)
     engine = GatewayExecutionEngine(
@@ -189,6 +237,7 @@ def build_gateway(
         settings=settings.execution,
         elevations=elevations,
         elevation_minutes=settings.approvals.elevation_minutes,
+        guard=catalog,
     )
     admin = AdminService(
         identity=identity,
@@ -231,7 +280,7 @@ def build_gateway(
         plans=plans_data,
         audit=audit,
         clock=clock,
-        catalog=catalog or NullCatalog(),
+        catalog=catalog,
         directory=directory,
         policy_engine=policy_engine,
         extra_actions=(MODEL_CHAT,),
@@ -250,6 +299,7 @@ def build_gateway(
             elevations_data,
             users_data,
             plans_data,
+            snapshots,
         ],
         registry=registry,
         audit=audit,
@@ -262,4 +312,5 @@ def build_gateway(
         access=access,
         approvals=approvals,
         executions=executions,
+        catalog=catalog,
     )

@@ -116,6 +116,8 @@ credentials:
 
 ## Pertanyaan terbuka (kontrak tidak diubah)
 
+Catatan integrasi: pertanyaan 1–5 dijawab oleh amandemen A1 (lihat bagian Integrasi di bawah).
+
 1. **Agent saja ke endpoint kolom kiri**: kontrak bilang `401`, padahal sebelumnya `403 admin_required`. Saya pakai `401` di kolom kiri dan tetap `403 admin_required` di endpoint infra. Apakah kontrak perlu menyebut ini?
 2. **Kode `plan_not_found`** tidak ada di kontrak (sekarang `404 not_found`). Tambahkan?
 3. **`apply_requires_second_admin` tidak bisa dibaca console** (sama dengan pertanyaan W no. 1). Usul: tampilkan di `GET /v1/contract` atau di endpoint kecil `GET /v1/admin/instance`.
@@ -124,3 +126,45 @@ credentials:
 6. **`/access` untuk user yang ada di `users.json` tetapi tidak ada di direktori** → `404 user_not_found`, sesuai kontrak. Akibatnya override per subject untuk user yang sudah dihapus dari IdP tidak bisa diperiksa lewat endpoint ini.
 7. **`AuditEntryView.actor.subject` untuk token statis** berisi id token admin (`tok_…`), bukan subject IdP. Bentuk ini perlu disepakati.
 8. **Grup bertingkat dan nama grup**: `DirectoryGroup.name` mengikuti `groups_full_path` (W no. 6). Hitungan member dibatasi 1000 per grup, karena diambil dari satu halaman.
+
+## Integrasi lane G + S dan amandemen A1 (10 Nov 2026)
+
+Branch `feat/gateway-admin`, dibuat dari `claude/admin-api-2d39bb` (`b6e4cb3`), lalu merge `claude/agw-sync-765ffe` (`cc36d6e`, laporan `devnote/lane-s-katalog-sync-20261110.md`). Belum di-push. Commit terakhir: lihat `git log -1 feat/gateway-admin` (pesan "integrate lanes G and S, amendment A1").
+
+**Keputusan merge**
+- Konflik di `devnote/SPEC.md`, `app.py`, `audit/models.py`, `runtime.py` diselesaikan dengan menyimpan kedua sisi. `config.py` ter-merge otomatis (`brokers.mcp` + `admin`).
+- **Satu `CatalogPort`**: `modules/catalog/ports.py` milik S (`snapshot`, `tables`, `state`, `catalog_actions`). `modules/administration/catalog_port.py` dan `NullCatalog` dihapus. `build_gateway` memasang `CatalogService` ke `AccessAdmin`, sehingga parameter `catalog=` hilang. Test memakai `EmptyCatalog` (fake) dan `FakeSqlSource` di `tests/access_world.py`.
+- `ResourceView.catalog` memakai `CatalogState` milik S (satu model). Semua `synced_at` katalog sekarang RFC 3339 dengan `Z` (`to_rfc3339`), bukan `isoformat()`.
+- `ActionInfo` mengambil `source=mcp`, `resource` (nama), dan `state` dari `catalog_actions()`. `risk` diambil dari definisi action, yang untuk MCP sudah `tool_risk`.
+- `routes_admin_catalog.py` memakai `AccessAdminDep`. Actor dibuat dengan `AdminActor.of(...)`, dan `CatalogService.sync`/`acknowledge` mendapat `context` untuk `details.via_agent`.
+- Problem plan `missing_action` sekarang mengikuti engine: wildcard yang hanya mengenai action katalog tidak memberi apa-apa, jadi dilaporkan.
+
+**Amandemen A1 (dikerjakan persis)**
+
+| # | Isi | Di mana |
+| - | --- | ------- |
+| 1 | `GET /v1/admin/instance` → `{apply_requires_second_admin, admin_user_roles}` | `routes_access_admin.py` |
+| 2 | Plan tak dikenal → `404 plan_not_found` (apply dan discard) | `common/errors.py`, `access.py` |
+| 3 | `POST /v1/admin/config/plans/{id}/discard` → `status: discarded`; bukan open (termasuk expired) → `409 plan_not_open`; diaudit `access.plan_discarded`; `plans?status=open` tetap memuat plan yang punya problem. Apply plan yang sudah di-discard → `409 plan_not_open` | `access.py` |
+| 4 | Approval agent pemanggil tanpa user ikut tampil, `requested_by.subject: null`; privileged tetap tersembunyi | sudah begitu, ditambah test |
+| 5 | Item `users` dengan `id` tak dikenal: cocok lewat `match`, selain itu dibuat dengan id baru | sudah begitu, ditambah test |
+| 6 | Wildcard tidak pernah mencakup `mcp.…` | test S tetap, ditambah test plan |
+| 7 | `ActionInfo.risk` = `low/medium/high/critical`; MCP read → low, write non-destruktif → medium, write lain → high | test `/v1/admin/actions` |
+| 8 | Sync tidak pernah gagal karena tool: `200 SyncOut` + `skipped [{tool, code}]`; kedua tool yang bertabrakan dilewati; `action_collision`/`action_too_long` bukan error HTTP lagi. `problems_error` dan kelas error-nya dihapus; CLI `agw sync` exit 0 dan menampilkan `skipped` | `catalog/models.py`, `diff.py`, `errors.py`, `cli.py` |
+| 9 | §7.1: bagian yang tidak diawali `a-z` → awalan `t_` (`_private` → `t__private`, `über` → `t__ber`); `invalid_action_id` dihapus | `catalog/rules.py` |
+| 10 | `Catalog.resource` = nama resource (URL tetap id) | `catalog_out` |
+| 11 | Catatan SPEC: ganti nama resource mengubah id action MCP setelah sync berikutnya; grant harus di-plan ulang | SPEC §11.6 |
+| 12 | Token agent tanpa user: `401` di endpoint admin akses, `403 admin_required` di infra | sudah begitu; endpoint katalog sekarang ikut `401` |
+| 13 | Grup dev `platform-admin` tanpa garis miring | SPEC §23 (teks saja) |
+
+**Test (integrasi)**
+- `pytest` default: 1153 passed, 25 deselected (`broker`).
+- Live Postgres (`-m broker tests/broker/test_sql_live.py`, stack `agw-broker-sql` :15432): 13 passed. Stack dimatikan lagi dengan `down -v`.
+- `ruff check`, `ruff format --check`, dan `mypy --strict` (src + tests) bersih.
+- Test baru atau diubah untuk integrasi:
+  - `test_access_admin_config.py`: instance, `plan_not_found`, discard (4 test), open dengan problem, user id asing tanpa match, sync katalog oleh admin akses;
+  - `test_access_admin_auth.py`: approval tanpa user;
+  - `test_catalog_api.py`: `skipped` untuk tabrakan, terlalu panjang, dan `_private`; risk/source di `/v1/admin/actions`; wildcard dalam plan; `401` untuk agent saja; `Catalog.resource` = nama;
+  - `test_catalog.py`: aturan `t_` baru.
+- Jalur SSH homelab tidak diubah: broker `mcp` dan direktori mati secara default, dan test SSH/sudo/elevation tetap hijau.
+

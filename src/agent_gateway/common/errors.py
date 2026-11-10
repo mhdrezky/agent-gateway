@@ -120,6 +120,14 @@ class SelfApprovalError(ConflictError):
     code = "self_approval"
 
 
+class PlanNotFoundError(NotFoundError):
+    code = "plan_not_found"
+
+
+class PlanNotOpenError(ConflictError):
+    code = "plan_not_open"
+
+
 class PlanStaleError(ConflictError):
     code = "plan_stale"
 

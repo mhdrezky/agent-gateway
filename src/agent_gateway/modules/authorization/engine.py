@@ -46,8 +46,10 @@ def any_pattern_matches(patterns: Iterable[str], action_id: str) -> bool:
 
 
 def grants(patterns: Iterable[str], action: ActionDefinition) -> bool:
-    """Whether ``patterns`` cover ``action``. Privileged actions need their exact id."""
-    if action.privileged:
+    """Whether ``patterns`` cover ``action``. Privileged actions need their exact id, and
+    so do actions read from a catalog (MCP tools): a wildcard such as ``mcp.desk.*`` never
+    grants a tool that a later sync finds (SPEC §11.6)."""
+    if action.privileged or action.bound_resource is not None:
         return action.id in patterns
     return any_pattern_matches(patterns, action.id)
 

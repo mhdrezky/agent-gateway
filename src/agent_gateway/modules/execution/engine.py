@@ -49,7 +49,7 @@ from agent_gateway.modules.credentials.models import SecretPayload
 from agent_gateway.modules.credentials.ports import CredentialStore
 from agent_gateway.modules.elevation.service import ElevationService
 from agent_gateway.modules.execution.models import Execution, ExecutionRequest, ExecutionStatus
-from agent_gateway.modules.execution.ports import ExecutionStore
+from agent_gateway.modules.execution.ports import ActionGuard, ExecutionStore
 from agent_gateway.modules.execution.redact import redact
 from agent_gateway.modules.identity.models import Principal, TokenKind
 from agent_gateway.modules.resources.models import Resource
@@ -83,6 +83,7 @@ class GatewayExecutionEngine:
         settings: ExecutionSettings,
         elevations: ElevationService | None = None,
         elevation_minutes: int = 0,
+        guard: ActionGuard | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
         self._executions = executions
@@ -98,6 +99,7 @@ class GatewayExecutionEngine:
         self._settings = settings
         self._elevations = elevations
         self._elevation_minutes = elevation_minutes
+        self._guard = guard
         self._log = logger or logging.getLogger("agent_gateway.execution")
         self._global_slots = asyncio.Semaphore(settings.max_concurrent)
         self._resource_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -138,6 +140,9 @@ class GatewayExecutionEngine:
         normalized = params.model_dump(mode="json")
         decision = await self._authorize(principal, registered, resource)
         decision = await self._apply_elevation(decision, registered, agent_id, resource.id)
+        refusal = await self._refusal(registered, resource) if decision.allowed else None
+        if refusal is not None:
+            decision = Decision.deny(refusal, policy_id=decision.policy_id)
         execution = Execution(
             id=new_id(IdPrefix.EXECUTION),
             agent_id=agent_id,
@@ -168,7 +173,7 @@ class GatewayExecutionEngine:
             )
             await self._executions.put(denied)
             raise ActionNotAllowedError(
-                "agent is not allowed to run this action on this resource",
+                refusal or "agent is not allowed to run this action on this resource",
                 execution_id=denied.id,
             )
 
@@ -334,6 +339,7 @@ class GatewayExecutionEngine:
         if registered is None or resource is None:
             return False
         decision = await self._authorize(principal, registered, resource)
+        decision = await self._apply_guard(decision, registered, resource)
         # A policy that now demands an admin takes the decision away from the requester.
         return decision.allowed and decision.approver is not Approver.ADMIN
 
@@ -449,6 +455,22 @@ class GatewayExecutionEngine:
             }
         )
 
+    async def _refusal(self, registered: RegisteredAction, resource: Resource) -> str | None:
+        if self._guard is None:
+            return None
+        return await self._guard.refusal(registered.definition, resource)
+
+    async def _apply_guard(
+        self, decision: Decision, registered: RegisteredAction, resource: Resource
+    ) -> Decision:
+        """The guard can only turn an allow into a deny, never the other way."""
+        if not decision.allowed:
+            return decision
+        refusal = await self._refusal(registered, resource)
+        if refusal is None:
+            return decision
+        return Decision.deny(refusal, policy_id=decision.policy_id)
+
     async def _open_elevation(self, execution: Execution, approval: Approval) -> None:
         """Approving a privileged action opens a window for the same agent and resource."""
         registered = self._registry.get(execution.action)
@@ -501,6 +523,14 @@ class GatewayExecutionEngine:
                 execution, None, error="action or resource no longer exists"
             )
             await self._record(AuditEventType.EXECUTION_FAILED, failed, SYSTEM_ACTOR)
+            return failed
+        # Checked again: a catalog review may have started while the approval waited.
+        refusal = await self._refusal(registered, resource)
+        if refusal is not None:
+            failed = await self._finish(execution, None, error=refusal)
+            await self._record(
+                AuditEventType.EXECUTION_FAILED, failed, SYSTEM_ACTOR, {"reason": refusal}
+            )
             return failed
         return await self._run(execution, registered, resource)
 

@@ -69,46 +69,47 @@ def database_error(exc: psycopg.Error, password: str) -> str:
     )
 
 
+def connect_read_only(attrs: SqlDatabaseAttributes, password: str) -> psycopg.Connection[Any]:
+    """A short read-only session with the resource's statement timeout, as its own login."""
+    options = (
+        f"-c default_transaction_read_only=on -c statement_timeout={attrs.statement_timeout_ms}"
+    )
+    try:
+        conn = psycopg.connect(
+            host=attrs.host,
+            port=attrs.port,
+            dbname=attrs.dbname,
+            user=attrs.username,
+            password=password,
+            options=options,
+            connect_timeout=attrs.connect_timeout_seconds,
+            sslmode=attrs.sslmode,
+            application_name=APPLICATION_NAME,
+        )
+    except psycopg.Error as exc:
+        # libpq never echoes the password; the detail stays in the server log.
+        log.warning("sql connect to %s:%s/%s failed: %s", attrs.host, attrs.port, attrs.dbname, exc)
+        raise BrokerError("could not connect to the database") from exc
+    conn.read_only = True
+    return conn
+
+
 class PsycopgRunner:
     async def run(self, attrs: SqlDatabaseAttributes, password: str, sql: str) -> QueryOutput:
         return await asyncio.to_thread(self._run, attrs, password, sql)
 
     @staticmethod
     def _run(attrs: SqlDatabaseAttributes, password: str, sql: str) -> QueryOutput:
-        options = (
-            f"-c default_transaction_read_only=on -c statement_timeout={attrs.statement_timeout_ms}"
-        )
-        try:
-            conn = psycopg.connect(
-                host=attrs.host,
-                port=attrs.port,
-                dbname=attrs.dbname,
-                user=attrs.username,
-                password=password,
-                options=options,
-                connect_timeout=attrs.connect_timeout_seconds,
-                sslmode=attrs.sslmode,
-                application_name=APPLICATION_NAME,
-            )
-        except psycopg.Error as exc:
-            # libpq never echoes the password; the detail stays in the server log.
-            log.warning(
-                "sql connect to %s:%s/%s failed: %s", attrs.host, attrs.port, attrs.dbname, exc
-            )
-            raise BrokerError("could not connect to the database") from exc
-
-        with conn:
-            conn.read_only = True
-            with conn.cursor() as cur:
-                try:
-                    cur.execute(sql.encode())
-                    rows = cur.fetchall()
-                except psycopg.errors.QueryCanceled as exc:
-                    raise BrokerError(
-                        "query canceled: statement timeout of "
-                        f"{attrs.statement_timeout_ms} ms exceeded"
-                    ) from exc
-                except psycopg.Error as exc:
-                    raise BrokerError(database_error(exc, password)) from exc
-                columns = [column.name for column in cur.description or []]
+        conn = connect_read_only(attrs, password)
+        with conn, conn.cursor() as cur:
+            try:
+                cur.execute(sql.encode())
+                rows = cur.fetchall()
+            except psycopg.errors.QueryCanceled as exc:
+                raise BrokerError(
+                    f"query canceled: statement timeout of {attrs.statement_timeout_ms} ms exceeded"
+                ) from exc
+            except psycopg.Error as exc:
+                raise BrokerError(database_error(exc, password)) from exc
+            columns = [column.name for column in cur.description or []]
         return QueryOutput(columns, [[jsonable(value) for value in row] for row in rows])

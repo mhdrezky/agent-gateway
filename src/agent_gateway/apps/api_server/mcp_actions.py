@@ -79,7 +79,14 @@ async def _tools(gateway: Gateway, principal: Principal) -> dict[str, tuple[str,
     for action in sorted(
         await gateway.engine.visible_actions(principal), key=lambda a: a.definition.id
     ):
-        ids = sorted(r.id for r in resources if r.type is action.definition.resource_type)
+        definition = action.definition
+        ids = sorted(
+            r.id
+            for r in resources
+            if r.type is definition.resource_type
+            # An action read from a catalog runs only on its own resource.
+            and definition.bound_resource in (None, r.id)
+        )
         tool = _tool(action, ids, write=action.definition.id in held) if ids else None
         if tool is None:
             continue

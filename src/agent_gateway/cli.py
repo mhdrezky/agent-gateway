@@ -22,6 +22,7 @@ from agent_gateway.config import Settings, load_settings
 from agent_gateway.modules.administration.apply import apply_file
 from agent_gateway.modules.administration.service import CLI_PRINCIPAL
 from agent_gateway.modules.approvals.models import ApprovalStatus
+from agent_gateway.modules.audit.models import Actor, ActorType
 from agent_gateway.modules.authorization.models import (
     ApprovalMode,
     PolicyEffect,
@@ -29,6 +30,7 @@ from agent_gateway.modules.authorization.models import (
     ResourceSelector,
     Role,
 )
+from agent_gateway.modules.catalog.models import catalog_out
 from agent_gateway.modules.credentials.models import CredentialType, SecretPayload
 from agent_gateway.modules.crypto.keyring import generate_master_key
 from agent_gateway.modules.identity.models import AgentStatus, IssuedToken, TokenKind, UserMatch
@@ -48,6 +50,9 @@ audit_app = typer.Typer(help="Inspect the audit log.", no_args_is_help=True)
 elevation_app = typer.Typer(
     help="Time-boxed windows for privileged actions (ssh.sudo).", no_args_is_help=True
 )
+catalog_app = typer.Typer(
+    help="What resources offer, read by `agw sync` (tables, MCP tools).", no_args_is_help=True
+)
 for sub, name in [
     (agent_app, "agent"),
     (token_app, "token"),
@@ -59,6 +64,7 @@ for sub, name in [
     (approvals_app, "approvals"),
     (audit_app, "audit"),
     (elevation_app, "elevation"),
+    (catalog_app, "catalog"),
 ]:
     app.add_typer(sub, name=name)
 
@@ -579,3 +585,77 @@ def elevation_revoke(elevation_id: str, config: ConfigOption = None) -> None:
 
 if __name__ == "__main__":
     app()
+
+
+# ---- catalog and sync (SPEC §11.6) --------------------------------------------------------
+
+CLI_ACTOR = Actor(type=ActorType.ADMIN, id=CLI_PRINCIPAL.token_id)
+
+
+async def _resource_id(gw: Gateway, ref: str) -> str:
+    return (await gw.catalog.resolve(ref)).id
+
+
+@app.command()
+def sync(
+    resource: Annotated[
+        str | None,
+        typer.Argument(help="Resource id or name. Without it, every resource with a catalog."),
+    ] = None,
+    config: ConfigOption = None,
+) -> None:
+    """Read what a resource offers into its catalog. Never grants anything.
+
+    SQL databases: tables and columns of the resource's schema. MCP servers: tools, which
+    become actions mcp.<resource>.<tool>. A running server picks the result up by itself.
+    """
+
+    async def run(gw: Gateway) -> list[dict[str, Any]]:
+        if resource is not None:
+            targets = [await _resource_id(gw, resource)]
+        else:
+            targets = [
+                r.id
+                for r in await gw.admin.list_resources(CLI_PRINCIPAL)
+                if gw.catalog.supports(r.type)
+            ]
+        results: list[dict[str, Any]] = []
+        for resource_id in targets:
+            try:
+                report = await gw.catalog.sync(CLI_ACTOR, resource_id)
+            except GatewayError as exc:
+                results.append({"resource": resource_id, "error": exc.code, "message": exc.message})
+                continue
+            # Tools left out are listed under "skipped"; the sync itself succeeded.
+            results.append({"resource": resource_id, **report.out().model_dump()})
+        return results
+
+    results = _run(config, run)
+    _print(results)
+    if any("error" in item for item in results):
+        raise typer.Exit(1)
+
+
+@catalog_app.command("show")
+def catalog_show(resource: str, config: ConfigOption = None) -> None:
+    """The last catalog of a resource (id or name)."""
+
+    async def run(gw: Gateway) -> Any:
+        return catalog_out(await gw.catalog.catalog(await _resource_id(gw, resource)))
+
+    _print(_run(config, run))
+
+
+@catalog_app.command("ack")
+def catalog_ack(
+    resource: str,
+    tools: Annotated[list[str], typer.Argument(help="Tools in needs_review to accept.")],
+    config: ConfigOption = None,
+) -> None:
+    """Accept the current schema and risk of MCP tools waiting for review."""
+
+    async def run(gw: Gateway) -> Any:
+        resource_id = await _resource_id(gw, resource)
+        return catalog_out(await gw.catalog.acknowledge(CLI_ACTOR, resource_id, tools))
+
+    _print(_run(config, run))

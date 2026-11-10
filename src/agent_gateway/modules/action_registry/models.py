@@ -38,6 +38,9 @@ class ActionDefinition:
     # A read never changes its target. Unmarked actions count as writes, so a new action
     # is never advertised as read-only by accident (SPEC §11.1, §16).
     read_only: bool = False
+    # Set for actions read from one resource's catalog (MCP tools, SPEC §11.6): the action
+    # runs only on that resource. ``None`` means any resource of ``resource_type``.
+    bound_resource: str | None = None
 
     def __post_init__(self) -> None:
         if not ACTION_ID_PATTERN.fullmatch(self.id):

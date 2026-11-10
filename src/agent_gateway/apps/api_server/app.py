@@ -16,6 +16,7 @@ from agent_gateway.apps.admin_ui.setup import install_admin_ui
 from agent_gateway.apps.api_server import (
     routes_access_admin,
     routes_admin,
+    routes_admin_catalog,
     routes_agent,
     routes_approvals,
     routes_models,
@@ -99,6 +100,7 @@ def create_app(gateway: Gateway, *, manage_lifecycle: bool = True) -> FastAPI:
     app.include_router(routes_models.router)
     app.include_router(routes_admin.router)
     app.include_router(routes_access_admin.router)
+    app.include_router(routes_admin_catalog.router)
     app.include_router(routes_approvals.router)
     install_admin_ui(app, gateway)
     return app

@@ -5,13 +5,13 @@
 - users: group ``staff`` → role ``staff`` (``fake.*``, ``test.leak``), group
   ``platform-admin`` → role ``platform-admin`` (the access admins, ``admin.user_roles``);
 - policy ``staff-echo`` lets ``staff`` use ``fake.*`` on ``echo-endpoint``;
-- a ``sql_database`` resource ``sample`` allows table ``customer``; its catalog lists
-  ``customer`` and ``product``;
+- a ``sql_database`` resource ``sample`` allows table ``customer``; it is synced, and its
+  catalog lists ``customer`` and ``product``;
 - the IdP directory knows alice (staff), bob (staff + admin), and carol (admin).
 """
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -26,14 +26,21 @@ from agent_gateway.modules.action_registry.models import (
     RiskLevel,
 )
 from agent_gateway.modules.action_registry.ports import ActionRegistry
-from agent_gateway.modules.administration.catalog_port import CatalogActionState, CatalogSummary
 from agent_gateway.modules.administration.service import CLI_PRINCIPAL
+from agent_gateway.modules.audit.models import Actor, ActorType
 from agent_gateway.modules.authorization.models import (
     ApprovalMode,
     PolicyEffect,
     PolicySubject,
     ResourceSelector,
     Role,
+)
+from agent_gateway.modules.catalog.models import (
+    CatalogActionInfo,
+    CatalogSnapshot,
+    CatalogState,
+    CatalogTable,
+    SourceCatalog,
 )
 from agent_gateway.modules.credentials.models import CredentialType, SecretPayload
 from agent_gateway.modules.identity.models import UserMatch
@@ -44,6 +51,7 @@ from tests.fakes.oidc import FakeIdp, oidc_settings
 from tests.world import USER_HEADER, World, build_world
 
 ADMIN_ROLE = "platform-admin"
+SYNC_ACTOR = Actor(type=ActorType.SYSTEM, id="test")
 ALICE = ("u-alice", ["staff"])
 BOB = ("u-bob", ["staff", ADMIN_ROLE])
 CAROL = ("u-carol", [ADMIN_ROLE])
@@ -83,23 +91,33 @@ class PrivBroker:
         return ActionResult(ok=True)
 
 
-@dataclass
-class FakeCatalog:
-    tables_by_resource: dict[str, frozenset[str]] = field(default_factory=dict)
+class FakeSqlSource:
+    """Reads ``customer`` and ``product`` from any ``sql_database`` resource."""
 
-    async def summary(self, resource: Resource) -> CatalogSummary:
-        if resource.name in self.tables_by_resource:
-            return CatalogSummary(snapshot_id="snap-1", synced_at="2026-11-10T00:00:00.000Z")
-        return CatalogSummary()
+    @property
+    def resource_type(self) -> ResourceType:
+        return ResourceType.SQL_DATABASE
 
-    async def tables(self, resource: Resource) -> frozenset[str] | None:
-        return self.tables_by_resource.get(resource.name)
+    async def read(self, resource: Resource, credential: SecretPayload | None) -> SourceCatalog:
+        return SourceCatalog(
+            tables=tuple(CatalogTable(name=name) for name in ("customer", "product"))
+        )
 
-    async def action_state(self, action_id: str) -> CatalogActionState:
-        return "active"
 
-    async def action_resource(self, action_id: str) -> str | None:
+class EmptyCatalog:
+    """A ``CatalogPort`` with no snapshot at all, for plans that skip catalog checks."""
+
+    async def snapshot(self, resource_id: str) -> CatalogSnapshot | None:
         return None
+
+    async def tables(self, resource_id: str) -> list[str] | None:
+        return None
+
+    async def state(self, resource: Resource) -> CatalogState:
+        return CatalogState()
+
+    async def catalog_actions(self) -> list[CatalogActionInfo]:
+        return []
 
 
 @dataclass
@@ -158,7 +176,7 @@ async def build_access_world(
         approval=ApprovalMode.NEVER,
         jwks=idp,
         extra_brokers=[PrivBroker(), SqlBroker()],
-        catalog=FakeCatalog({"sample": frozenset({"customer", "product"})}),
+        catalog_sources=[FakeSqlSource()],
         directory_transport=idp_admin.transport(),
         clock=clock,
     )
@@ -201,4 +219,5 @@ async def build_access_world(
             "allowed_tables": ["customer"],
         },
     )
+    await w.gateway.catalog.sync(SYNC_ACTOR, sample.id)
     return AccessWorld(w=w, idp=idp, idp_admin=idp_admin, clock=clock, sample_id=sample.id)

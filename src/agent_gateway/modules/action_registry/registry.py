@@ -23,12 +23,46 @@ class InMemoryActionRegistry:
     def __init__(self, disabled: Iterable[str] = ()) -> None:
         self._actions: dict[str, RegisteredAction] = {}
         self._disabled = frozenset(disabled)
+        # Action ids per group of actions read from a resource's catalog (SPEC §11.6).
+        self._groups: dict[str, frozenset[str]] = {}
 
     def register(self, action: RegisteredAction) -> None:
         action_id = action.definition.id
         if action_id in self._actions:
             raise ValueError(f"action {action_id!r} already registered")
         self._actions[action_id] = action
+
+    def replace_group(self, group: str, actions: Iterable[RegisteredAction]) -> list[str]:
+        """Make ``actions`` the whole of ``group``: ids no longer in it are removed.
+
+        Groups hold actions read from a resource's catalog, not code. An id that another
+        group or a code-defined action already has is skipped and returned, so a catalog
+        can never replace an action it does not own.
+        """
+        owned = self._groups.get(group, frozenset())
+        for action_id in owned:
+            self._actions.pop(action_id, None)
+        kept: set[str] = set()
+        skipped: list[str] = []
+        for action in actions:
+            action_id = action.definition.id
+            if action_id in self._actions or action_id in kept:
+                skipped.append(action_id)
+                continue
+            self._actions[action_id] = action
+            kept.add(action_id)
+        if kept:
+            self._groups[group] = frozenset(kept)
+        else:
+            self._groups.pop(group, None)
+        return skipped
+
+    def group_of(self, action_id: str) -> str | None:
+        """The group that holds ``action_id``, or ``None`` for a code-defined action."""
+        for group, ids in self._groups.items():
+            if action_id in ids:
+                return group
+        return None
 
     def action(
         self,

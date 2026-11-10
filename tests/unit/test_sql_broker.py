@@ -82,8 +82,10 @@ def test_resource_attribute_schema() -> None:
         model.model_validate(sql_attributes(password="x"))
     with pytest.raises(ValueError, match="engine"):
         model.model_validate(sql_attributes(engine="mssql"))
-    with pytest.raises(ValueError, match="allowed_tables"):
-        model.model_validate(sql_attributes(allowed_tables=[]))
+    # Tables may be picked from the catalog later; an empty set refuses every query.
+    assert (
+        SqlDatabaseAttributes.model_validate(sql_attributes(allowed_tables=[])).allowed_tables == ()
+    )
     with pytest.raises(ValueError, match="allowed_tables"):
         model.model_validate(sql_attributes(allowed_tables=["public.product"]))
     with pytest.raises(ValueError, match="host"):

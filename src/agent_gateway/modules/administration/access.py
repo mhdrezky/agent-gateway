@@ -20,9 +20,10 @@ from agent_gateway.common.canonical import sha256_digest
 from agent_gateway.common.clock import Clock, to_rfc3339
 from agent_gateway.common.errors import (
     InvalidParamsError,
-    NotFoundError,
     PlanExpiredError,
     PlanHasProblemsError,
+    PlanNotFoundError,
+    PlanNotOpenError,
     PlanStaleError,
     SecondAdminRequiredError,
 )
@@ -38,7 +39,6 @@ from agent_gateway.modules.administration.access_models import (
     AccessView,
     AdminActionInfo,
     ApplyOut,
-    CatalogState,
     Change,
     ConfigRole,
     ConfigUser,
@@ -54,7 +54,6 @@ from agent_gateway.modules.administration.access_models import (
     UserRecord,
     match_key,
 )
-from agent_gateway.modules.administration.catalog_port import CatalogPort
 from agent_gateway.modules.administration.directory import Directory
 from agent_gateway.modules.approvals.models import Approver
 from agent_gateway.modules.audit.models import Actor, ActorType, AuditEventType, AuditRecord
@@ -77,6 +76,8 @@ from agent_gateway.modules.authorization.models import (
     Role,
 )
 from agent_gateway.modules.authorization.ports import PolicyEngine
+from agent_gateway.modules.catalog.models import CatalogState
+from agent_gateway.modules.catalog.ports import CatalogPort
 from agent_gateway.modules.identity.models import (
     Agent,
     Principal,
@@ -138,7 +139,7 @@ class StoredPlan(Record):
     created_by: str
     created_at: AwareDatetime
     expires_at: AwareDatetime
-    status: Literal["open", "applied", "expired"] = "open"
+    status: PlanStatus = "open"
     config: dict[str, Any]
     changes: tuple[dict[str, Any], ...] = ()
     problems: tuple[dict[str, Any], ...] = ()
@@ -305,7 +306,7 @@ class AccessAdmin:
     async def resource_views(self) -> list[ResourceView]:
         views: list[ResourceView] = []
         for resource in sorted(await self._resources.list(), key=lambda r: r.name):
-            summary = await self.catalog.summary(resource)
+            state = await self.catalog.state(resource)
             views.append(
                 ResourceView(
                     id=resource.id,
@@ -315,9 +316,9 @@ class AccessAdmin:
                     has_credential=resource.credential_id is not None,
                     allowed_tables=_tables_of(resource),
                     catalog=CatalogState(
-                        synced_at=summary.synced_at,
-                        snapshot_id=summary.snapshot_id,
-                        pending_review=summary.pending_review,
+                        synced_at=state.synced_at,
+                        snapshot_id=state.snapshot_id,
+                        pending_review=state.pending_review,
                     ),
                 )
             )
@@ -325,19 +326,21 @@ class AccessAdmin:
 
     async def action_infos(self, *, include_privileged: bool) -> list[AdminActionInfo]:
         infos: list[AdminActionInfo] = []
+        from_catalog = {info.action: info for info in await self.catalog.catalog_actions()}
         for action in self.actions():
             if action.privileged and not include_privileged:
                 continue
+            tool = from_catalog.get(action.id)
             infos.append(
                 AdminActionInfo(
                     id=action.id,
                     resource_type=str(action.resource_type),
-                    resource=await self.catalog.action_resource(action.id),
+                    resource=None if tool is None else tool.resource_name,
                     description=action.description,
                     risk=str(action.risk),
                     read_only=action.read_only,
-                    source="mcp" if action.id.startswith("mcp.") else "builtin",
-                    state=await self.catalog.action_state(action.id),
+                    source="builtin" if tool is None else "mcp",
+                    state="active" if tool is None else tool.state,
                 )
             )
         return infos
@@ -454,13 +457,40 @@ class AccessAdmin:
                 result.append(_plan_out(current))
         return result
 
+    async def discard(self, plan_id: str, actor: AdminActor) -> PlanOut:
+        """Close an open plan without applying it; any access admin may (amendment A1)."""
+        async with self._lock:
+            stored = await self._plans.get(plan_id)
+            if stored is None:
+                raise PlanNotFoundError(f"plan {plan_id} not found")
+            if stored.status != "open" or self._clock.now() >= stored.expires_at:
+                status = "expired" if stored.status == "open" else stored.status
+                raise PlanNotOpenError(f"plan {plan_id} is {status}, not open")
+            await self._audit.append(
+                AuditRecord(
+                    event=AuditEventType.ACCESS_PLAN_DISCARDED,
+                    actor=actor.actor,
+                    details={
+                        **actor.details(),
+                        "plan_id": plan_id,
+                        "planned_by": stored.created_by,
+                    },
+                )
+            )
+            discarded = await self._plans.update(
+                plan_id, lambda p: p.model_copy(update={"status": "discarded"})
+            )
+            return _plan_out(discarded)
+
     async def apply(self, plan_id: str, actor: AdminActor) -> ApplyOut:
         async with self._lock:
             stored = await self._plans.get(plan_id)
             if stored is None:
-                raise NotFoundError(f"plan {plan_id} not found")
+                raise PlanNotFoundError(f"plan {plan_id} not found")
             if stored.status == "applied":
                 raise PlanStaleError(f"plan {plan_id} was already applied")
+            if stored.status == "discarded":
+                raise PlanNotOpenError(f"plan {plan_id} was discarded")
             now = self._clock.now()
             if stored.status == "expired" or now >= stored.expires_at:
                 await self._plans.update(
@@ -546,8 +576,16 @@ class AccessAdmin:
 
         def check_actions(what: str, patterns: Iterable[str]) -> None:
             for pattern in patterns:
-                if not any(pattern_matches(pattern, a.id) for a in known):
-                    planned.problem("missing_action", f"{what} names unknown action '{pattern}'")
+                # As the engine sees it: a wildcard never grants a catalog (MCP) action.
+                if not any(
+                    grants([pattern], a) or (a.privileged and pattern_matches(pattern, a.id))
+                    for a in known
+                ):
+                    planned.problem(
+                        "missing_action",
+                        f"{what} names '{pattern}', which grants no action here "
+                        "(catalog actions must be named exactly)",
+                    )
                 for action_id in privileged:
                     if pattern_matches(pattern, action_id):
                         planned.problem(
@@ -758,7 +796,7 @@ class AccessAdmin:
                 )
             )
             planned.ops.tables.append((resource, wanted))
-            catalog = await self.catalog.tables(resource)
+            catalog = await self.catalog.tables(resource.id)
             if catalog is not None:
                 for table in wanted:
                     if table not in catalog:

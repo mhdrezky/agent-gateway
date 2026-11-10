@@ -28,6 +28,7 @@ from agent_gateway.modules.administration.access_models import (
     DirectoryGroup,
     DirectoryUser,
     ExecutionDetail,
+    InstanceView,
     PlanIn,
     PlanOut,
     PlanStatus,
@@ -37,6 +38,18 @@ from agent_gateway.modules.execution.models import ExecutionStatus
 from agent_gateway.modules.identity.models import Principal
 
 router = APIRouter(prefix="/v1/admin")
+
+
+# ---- the instance (amendment A1) --------------------------------------------------------
+
+
+@router.get("/instance")
+async def instance(gateway: GatewayDep, actor: AccessAdminDep) -> InstanceView:
+    settings = gateway.settings.admin
+    return InstanceView(
+        apply_requires_second_admin=settings.apply_requires_second_admin,
+        admin_user_roles=list(settings.user_roles),
+    )
 
 
 # ---- reads (contract §4) ----------------------------------------------------------------
@@ -120,6 +133,11 @@ async def plan_config(body: PlanIn, gateway: GatewayDep, actor: AccessAdminDep) 
 @router.post("/config/apply")
 async def apply_config(body: ApplyIn, gateway: GatewayDep, actor: AccessAdminDep) -> ApplyOut:
     return await gateway.access.apply(body.plan_id, AdminActor.of(actor))
+
+
+@router.post("/config/plans/{plan_id}/discard")
+async def discard_plan(plan_id: str, gateway: GatewayDep, actor: AccessAdminDep) -> PlanOut:
+    return await gateway.access.discard(plan_id, AdminActor.of(actor))
 
 
 @router.get("/config/plans")

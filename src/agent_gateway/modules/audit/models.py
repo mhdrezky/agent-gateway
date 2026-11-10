@@ -45,6 +45,10 @@ class AuditEventType(StrEnum):
     BIND_CHECKED = "bind.checked"
     # One plan of the access configuration applied (SPEC §23); details carry the full diff.
     ACCESS_APPLIED = "access.applied"
+    ACCESS_PLAN_DISCARDED = "access.plan_discarded"
+    CATALOG_SYNCED = "catalog.synced"
+    CATALOG_SYNC_FAILED = "catalog.sync_failed"
+    CATALOG_ACKNOWLEDGED = "catalog.acknowledged"
 
 
 class ActorType(StrEnum):

@@ -38,7 +38,10 @@ uv run pytest -m broker tests/broker/test_docker_live.py
 
 The stack has its own compose project and host port 15432, so it does not
 collide with other stacks. `sql/init.sql` creates the `sample` schema and the
-`agw_reader` login the tests use.
+`agw_reader` login the tests use, plus what the catalog tests (`agw sync`) need:
+comments, a table the reader may not read, and a mixed-case table. It only runs on
+a fresh volume, so after it changes recreate the stack with `down -v`. The catalog
+tests also log in as the owner (`agw_owner`) to create and drop a probe table.
 
 ```bash
 docker compose -p agw-broker-sql -f tests/broker/docker-compose.sql.yml up -d --wait

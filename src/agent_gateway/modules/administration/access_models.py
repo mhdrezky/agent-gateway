@@ -16,6 +16,7 @@ from pydantic import (
     model_validator,
 )
 
+from agent_gateway.modules.catalog.models import CatalogState
 from agent_gateway.modules.identity.models import UserMatch
 
 ADMIN_CONTRACT_VERSION = "agentgate-gateway-admin/1"
@@ -42,12 +43,6 @@ class UserRecord(BaseModel):
     id: str
     match: UserMatch
     roles: list[str]
-
-
-class CatalogState(BaseModel):
-    synced_at: str | None = None
-    snapshot_id: str | None = None
-    pending_review: bool = False
 
 
 class ResourceView(BaseModel):
@@ -255,7 +250,7 @@ class Problem(BaseModel):
     message: str
 
 
-PlanStatus = Literal["open", "applied", "expired"]
+PlanStatus = Literal["open", "applied", "expired", "discarded"]
 
 
 class PlanOut(BaseModel):
@@ -266,6 +261,13 @@ class PlanOut(BaseModel):
     status: PlanStatus = "open"
     changes: list[Change]
     problems: list[Problem] = Field(default_factory=list)
+
+
+class InstanceView(BaseModel):
+    """``GET /v1/admin/instance`` (amendment A1): the instance's admin settings."""
+
+    apply_requires_second_admin: bool
+    admin_user_roles: list[str]
 
 
 class ApplyIn(_Strict):

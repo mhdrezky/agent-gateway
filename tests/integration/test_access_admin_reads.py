@@ -67,7 +67,8 @@ async def test_resources_never_carry_secrets_or_credential_ids(aw: AccessWorld) 
     }
     sample = resources["sample"]
     assert sample["allowed_tables"] == ["customer"]
-    assert sample["catalog"]["snapshot_id"] == "snap-1"
+    assert sample["catalog"]["snapshot_id"].startswith("snap_")
+    assert sample["catalog"]["synced_at"].endswith("Z")
     assert sample["has_credential"] is False
     text = str(await get(aw, "/v1/admin/resources"))
     assert "cred_" not in text

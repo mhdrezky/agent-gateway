@@ -20,7 +20,6 @@ from agent_gateway.modules.action_registry.models import (
     RiskLevel,
 )
 from agent_gateway.modules.action_registry.ports import ActionRegistry
-from agent_gateway.modules.administration.catalog_port import CatalogPort
 from agent_gateway.modules.administration.service import CLI_PRINCIPAL
 from agent_gateway.modules.authorization.models import (
     ApprovalMode,
@@ -29,6 +28,7 @@ from agent_gateway.modules.authorization.models import (
     ResourceSelector,
     Role,
 )
+from agent_gateway.modules.catalog.ports import CatalogSource
 from agent_gateway.modules.credentials.models import CredentialType, SecretPayload
 from agent_gateway.modules.crypto.keyring import generate_master_key
 from agent_gateway.modules.identity.models import TokenKind, UserMatch
@@ -144,7 +144,7 @@ async def build_world(
     jwks: JwksSource | None = None,
     model_transport: httpx.AsyncBaseTransport | None = None,
     extra_brokers: Sequence[Broker] = (),
-    catalog: CatalogPort | None = None,
+    catalog_sources: Sequence[CatalogSource] | None = None,
     directory_transport: httpx.AsyncBaseTransport | None = None,
     clock: Clock | None = None,
 ) -> World:
@@ -154,7 +154,7 @@ async def build_world(
         brokers=[fake, TestBroker(), *extra_brokers],
         jwks=jwks,
         model_transport=model_transport,
-        catalog=catalog,
+        catalog_sources=catalog_sources,
         directory_transport=directory_transport,
         clock=clock,
     )
