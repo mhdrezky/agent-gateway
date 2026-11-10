@@ -123,6 +123,7 @@ agent-gateway/
 │   │   ├── audit/               # writer & verifier hash chain
 │   │   ├── execution/           # orkestrasi pipeline eksekusi, store, dispatcher approval
 │   │   ├── administration/      # operasi admin ber-audit (REST admin + CLI)
+│   │   ├── catalog/             # snapshot katalog per resource, diff, review (§11.6)
 │   │   └── model_endpoints/     # resource model: daftar & chat OpenAI-compatible (fase 4)
 │   ├── brokers/
 │   │   ├── base.py              # Broker protocol & ActionContext
@@ -131,7 +132,9 @@ agent-gateway/
 │   │   ├── github/
 │   │   ├── cloudflare/
 │   │   ├── http/
-│   │   └── smtp/                # mail.send (fase 4, §11.4)
+│   │   ├── sql/                 # sql.query + baca katalog tabel (§11.4, §11.6)
+│   │   ├── smtp/                # mail.send (fase 4, §11.5)
+│   │   └── mcp/                 # tool server MCP luar sebagai action (§11.6)
 │   ├── common/                  # utilitas bersama: ids, clock, canonical JSON, errors, base model
 │   ├── config.py                # loader konfigurasi
 │   ├── runtime.py               # composition root: merangkai semua implementasi
@@ -177,6 +180,7 @@ semua module persisten ──▶ storage
 - `modules` tidak boleh meng-import `apps`, `cli`, atau `runtime`. Hanya `runtime.py` (composition root), `cli.py`, dan `apps` yang merangkai implementasi konkret.
 - Hanya `credentials` yang boleh memanggil fungsi dekripsi dari `crypto`. `identity` (HMAC token) dan `audit` (anchor) hanya boleh memakai `KeyRing.subkey`. `authorization`, `action_registry`, `approvals`, `resources`, `execution` tidak boleh meng-import `crypto`.
 - `model_endpoints` tidak boleh meng-import `crypto` atau `brokers`; credential hanya lewat `CredentialStore.open` (§7.5).
+- `catalog` tidak boleh meng-import `crypto`, `brokers`, atau `execution`; sumber katalog (broker) dirangkai oleh `runtime`.
 - `common` tidak boleh meng-import module lain mana pun.
 - Tidak ada relative import.
 
@@ -207,6 +211,7 @@ Semua model turunan `common.models.StrictModel` (immutable, `extra="forbid"`); m
 | `audit` | Menulis event berantai hash, verifikasi chain | Mencatat secret |
 | `execution` | Menjalankan pipeline lengkap (§12) | Logika spesifik broker |
 | `brokers/*` | Menjalankan operasi nyata ke sistem eksternal | Menerima perintah bebas |
+| `catalog` | Snapshot katalog per resource (tabel SQL, tool MCP), diff tiap sync, review tool, guard panggilan, mendaftarkan action katalog (§11.6) | Memberi izin |
 | `model_endpoints` | Resource `model`: memutuskan izin `model.chat`, meneruskan satu giliran chat ke server OpenAI-compatible, audit tanpa teks pesan (§15.4) | Menyimpan isi pesan, menunggu approval |
 
 ## 6. Storage engine
@@ -730,7 +735,7 @@ Atribut resource `sql_database` (`extra="forbid"`):
 | `dbname` | – | `^[A-Za-z0-9_][A-Za-z0-9_.-]{0,62}$` |
 | `username` | – | login database, `^[A-Za-z_][A-Za-z0-9_.@-]{0,62}$` |
 | `schema_name` | `public` | identifier huruf kecil; semua tabel di-pin ke schema ini |
-| `allowed_tables` | – | minimal satu nama tabel huruf kecil tanpa schema |
+| `allowed_tables` | `[]` | nama tabel huruf kecil tanpa schema; boleh kosong (semua query ditolak) dan diisi dari katalog (§11.6). Tabel yang hilang dari katalog ditolak walau masih di sini |
 | `row_cap` | `200` | 1–10000 baris per panggilan |
 | `statement_timeout_ms` | `15000` | 100–50000 (di bawah timeout action 60 detik) |
 | `connect_timeout_seconds` | `5` | 1–10 |
@@ -852,6 +857,67 @@ Nama broker `smtp`, tetapi `ActionDefinition.broker` untuk `mail.send` bernilai 
 **Approval dan anotasi:** `mail.send` adalah tulis (`read_only` tetap `false`), jadi `destructiveHint` benar (§16). Di instance agentgate, policy-nya memakai `approval: requester` (§13b). Tanpa itu, `by_risk` tetap berlaku: risk `medium` wajib approval admin di resource bertag `env:prod`.
 
 Perbedaan dari doorman: default `security` adalah `starttls` (doorman `none`) agar konfigurasi yang lupa diisi tetap terenkripsi; STARTTLS dicek secara eksplisit lewat `EHLO`; subject juga menolak `\r` dan karakter kontrol lain (doorman hanya `\n`); batas penerima bisa diatur per resource; header `Date` ditambahkan; penolakan sebagian penerima dilaporkan di `refused`.
+
+### 11.6 Katalog, `agw sync`, dan broker `mcp` (kontrak admin §7)
+
+Katalog = snapshot apa yang ditawarkan sebuah resource, dibaca dari resource itu sendiri. **Sync tidak pernah memberi izin**; ia hanya mengisi apa yang bisa dipilih admin. Implementasi: `modules/catalog/` (snapshot, diff, review, guard), sumber katalog di broker (`brokers/sql/introspect.py`, `brokers/mcp/`), REST di `apps/api_server/routes_admin_catalog.py`, CLI `agw sync` dan `agw catalog`.
+
+**Penyimpanan.** Satu snapshot per resource di `var/catalogs.json` (`CatalogSnapshot`, key = id resource), ditulis atomic seperti collection lain. Setiap sync membuat `snapshot_id` baru (`snap_<ULID>`) dan menyimpan diff-nya (`added`, `removed`, `changed`, berdasarkan nama) terhadap snapshot sebelumnya. Sync yang gagal tidak menyentuh snapshot. Semua sync dan acknowledge diaudit (`catalog.synced`, `catalog.sync_failed`, `catalog.acknowledged`).
+
+| Endpoint (token admin statis untuk sekarang) | Isi |
+| -------- | --- |
+| `GET /v1/admin/resources/{id}/catalog` | `Catalog`: `resource` (id), `snapshot_id`, `synced_at`, `tables` atau `tools`. Belum pernah sync → `404 catalog_not_found` |
+| `POST /v1/admin/resources/{id}/sync` | `SyncOut`. Resource tidak bisa dibaca → `502 sync_failed` (pesan aman), snapshot lama tetap. Tipe tanpa katalog atau broker-nya mati → `422 catalog_not_supported` |
+| `POST /v1/admin/resources/{id}/catalog/acknowledge` `{"tools": [...]}` | `Catalog`. Semua atau tidak sama sekali; nama yang tidak ada atau tidak `needs_review` → `409 not_pending_review` |
+
+CLI: `agw sync [resource]` (id atau nama; tanpa argumen = semua resource yang punya katalog; exit 1 bila ada yang gagal), `agw catalog show <resource>`, `agw catalog ack <resource> <tool>...`. Server yang sedang jalan memuat ulang action dari snapshot di setiap tick dispatcher (2 detik), sehingga sync dari CLI (proses lain) langsung berlaku.
+
+**`sql_database`.** Dibaca dengan login resource itu sendiri (credential `basic_auth`), sesi read-only yang sama dengan `sql.query`. PostgreSQL: `pg_catalog` untuk schema `schema_name`: tabel, partitioned table induk, foreign table, view, materialized view (bukan partisi), kolom (`format_type`), nullable, dan komentar tabel/kolom. Hanya relasi yang boleh di-`SELECT` login itu (`has_table_privilege`) dan bernama identifier huruf kecil (yang bisa masuk `allowed_tables`). Engine dipilih dari `attributes.engine` lewat `INTROSPECTORS`; T-SQL menambah introspector-nya sendiri di sana.
+
+- `allowed_tables` tetap batas atas yang dicek broker dan boleh kosong (artinya semua query ditolak); isinya dipilih dari katalog lewat plan.
+- Tabel yang hilang dicatat di `removed_tables` snapshot sampai muncul lagi. Selama masih ada di `allowed_tables`, broker **menolaknya** (dikurangkan dari set yang diizinkan sebelum gate) dan `ResourceView.catalog.pending_review` = `true`. Plan yang menghapusnya dari `allowed_tables` menghilangkan flag itu.
+
+**`mcp_server` (resource type baru).** Broker `mcp` aktif hanya bila `brokers.mcp.enabled: true`.
+
+| Atribut | Default | Aturan |
+| ------- | ------- | ------ |
+| `url` | – | URL `http`/`https` endpoint Streamable HTTP, tanpa userinfo, maks 2048 |
+| `transport` | `streamable_http` | satu-satunya nilai |
+| `timeout_seconds` | `30` | 1–55, per request ke server; timeout action 60 detik tetap membungkus satu panggilan |
+
+Credential opsional: tipe `api_token`, dikirim sebagai `Authorization: Bearer <token>`; tipe lain ditolak. Klien = SDK MCP resmi (`streamable_http_client` + `ClientSession`), satu sesi pendek per operasi.
+
+Sync memanggil `tools/list` (dengan paging). Setiap tool menjadi action **`mcp.<resource>.<tool>`** persis menurut kontrak §7.1 (huruf kecil, selain `[a-z0-9_]` → `_`, awalan digit → `t_`, nama tool model `.` → `_` maks 64). Nama resource yang dipakai adalah nama saat sync.
+
+| Hal | Aturan |
+| --- | ------ |
+| Risiko | `readOnlyHint: true` → read, risk `low`. Selain itu write: `destructiveHint: false` → `medium`, lainnya (termasuk tanpa anotasi) → `high` |
+| Skema params | `inputSchema` server apa adanya; argumen divalidasi dengan JSON Schema (pesan error menyebut lokasi dan kata kunci, tidak pernah nilai input) |
+| Terikat resource | Action hanya berjalan di resource asalnya (`ActionDefinition.bound_resource`); resource lain → ditolak `action belongs to another resource`. `/mcp/actions` hanya menawarkan resource itu di `enum` |
+| Grant | Seperti action privileged: role dan policy harus menyebut id-nya **persis**. Wildcard (`mcp.*`, `mcp.desk.*`) tidak pernah mencakup action katalog, jadi tool baru tidak ter-grant ke siapa pun |
+| Tabrakan | Dua tool yang menjadi id sama → keduanya tidak ditambahkan, sync menjawab `409 action_collision` |
+| Terlalu panjang | → tool itu tidak ditambahkan, `409 action_too_long` |
+| Id tidak sah di gateway | Mis. tool `_x` (bagian id diawali `_`): tidak ditambahkan, `409 invalid_action_id` (di luar kontrak, lihat pertanyaan terbuka) |
+
+Pada `409` di atas, snapshot **tetap disimpan** tanpa tool yang bermasalah; tool lain berlaku. Kode diambil dari masalah pertama, pesan menyebut semuanya.
+
+Hasil panggilan (`ActionResult.data`): `content` (teks, diredaksi dan dipotong ke `output_limit_bytes`), `other_content` (tipe konten non-teks), `structured` (`structuredContent`, hanya bila masih muat utuh). `isError` dari server → `ok=false`, `error = "the tool reported an error: <teks pertama, maks 300>"`. Server tidak terjangkau → `could not reach the MCP server`.
+
+**Review.** Setiap tool menyimpan bentuk yang terakhir diterima admin (`accepted_schema_digest` = SHA-256 JSON kanonik `inputSchema`, `accepted_read_only`), diisi saat tool pertama terlihat.
+
+| State | Kapan | Akibat |
+| ----- | ----- | ------ |
+| `active` | bentuk sama dengan yang diterima (atau tool baru) | jalan normal lewat engine (policy, approval, audit) |
+| `needs_review` | skema input berbeda dari yang diterima, atau yang diterima read dan sekarang write | setiap panggilan ditolak, `reason: "catalog review pending"`; eksekusi yang sudah disetujui tetapi belum jalan juga gagal dengan alasan itu. Kembali ke bentuk yang diterima → `active` lagi |
+| `removed` | tidak ada lagi di `tools/list` | bukan action lagi (di-unregister); tetap di snapshot dengan bentuk yang diterima, jadi kalau muncul lagi dengan bentuk lain langsung `needs_review` |
+
+Write → read, atau perubahan deskripsi saja, tercatat di `changed` tetapi tidak perlu review. Acknowledge menerima bentuk saat ini.
+
+**Registrasi action.** Action katalog didaftarkan ke registry sebagai grup per resource (`InMemoryActionRegistry.replace_group`): saat start dari snapshot tersimpan, setelah setiap sync, dan di tick dispatcher. Grup tidak bisa menimpa action kode atau grup lain (id bentrok dilewati dan dicatat di log); `actions.disabled` tetap berlaku. Resource yang dihapus → action-nya hilang di tick berikutnya. Guard engine (`ActionGuard`, diimplementasikan `CatalogService.refusal`) membaca snapshot di setiap panggilan; ia hanya bisa mengubah allow menjadi deny, tidak pernah sebaliknya.
+
+**Antarmuka baca (`CatalogPort`).** Untuk API admin: `snapshot(id)`, `tables(id)` (nama tabel snapshot terakhir, `None` bila belum sync; untuk problem plan `table_not_in_catalog`), `state(resource)` (`CatalogState` untuk `ResourceView.catalog`), `catalog_actions()` (action katalog dengan id dan nama resource, state, risk, read_only; untuk `ActionInfo` `source=mcp`).
+
+**Fixture dev.** `tests/fixtures/mcp_fixture.py`: server MCP kecil dengan tool read (`lookup_order`, `list_queues`), write non-destruktif (`create_ticket`), dan tanpa anotasi (`ping_raw`); varian `v2` mengubah skema `lookup_order`, membuat `list_queues` menjadi write, menghapus `ping_raw`, dan menambah `close_ticket`. Jalankan: `uv run python -m tests.fixtures.mcp_fixture --port 8765 [--variant v2] [--token T]`; `POST /variant` mengganti varian server yang sedang jalan.
 
 ## 12. Execution engine
 
@@ -1213,6 +1279,8 @@ brokers:
     enabled: false        # broker sql (§11.4): action sql.query ke resource sql_database
   smtp:
     enabled: false        # broker mail.send (§11.5); aktifkan hanya di instance yang mengirim mail
+  mcp:
+    enabled: false        # resource mcp_server dan tool-nya sebagai action (§11.6)
 users:
   oidc:                   # opsional; tanpa ini X-User-Token selalu ditolak (§9.4)
     issuer: https://idp.example.com/realms/company   # nilai klaim iss yang diharapkan
@@ -1474,3 +1542,5 @@ Sumber kebenaran: repo agentgate, `app/docs/gateway-admin-contract.md`, tipe wir
 | Audit | `GET /v1/admin/audit?…&subject=&limit=&cursor=` → halaman. Verify tetap infra |
 | Environment | Satu instance per environment. Console membandingkan dengan membaca `config` dari tiap instance, dan mem-promote dengan mem-plan config sumber di instance tujuan. Secret tidak pernah ada di config |
 | Seed dev | Tiap agent memegang role sendiri (`agentgate-app`), bukan role orang. Role `platform-admin` untuk grup `/platform-admin` di `admin.user_roles` kedua instance. Production `apply_requires_second_admin: true` |
+
+Status implementasi (10 Nov 2026): katalog, sync, dan MCP (bagian Katalog di atas) ada di §11.6. Endpoint-nya sementara memakai token admin statis sampai dependency admin akses (OIDC) tersedia.
