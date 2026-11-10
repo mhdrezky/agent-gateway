@@ -28,6 +28,7 @@
 20. [Rencana implementasi bertahap](#20-rencana-implementasi-bertahap)
 21. [Pertanyaan terbuka](#21-pertanyaan-terbuka)
 22. [Kontrak `agentgate-gateway/1`](#22-kontrak-agentgate-gateway1)
+23. [Kontrak `agentgate-gateway-admin/1`](#23-kontrak-agentgate-gateway-admin1-draf-10-nov-2026)
 
 ---
 
@@ -1045,6 +1046,8 @@ Response: objek Execution (§8.7) dengan status HTTP `200` (selesai), `202` (men
 | GET | `/v1/admin/audit?since=&until=&event=` |
 | GET | `/v1/admin/audit/verify` |
 
+Endpoint di atas tetap hanya untuk token admin statis. Admin akses yang login lewat OIDC (console agentgate) memakai subset baca dan endpoint plan/apply di §23; selain itu ia mendapat `403 infra_only`.
+
 Tidak ada endpoint yang mengembalikan plaintext credential atau master key. Agent tidak bisa menghapus agent; nonaktifkan dengan `status: disabled`. Semua perubahan admin dicatat di audit oleh `modules/administration` (dipakai bersama oleh REST dan CLI).
 
 Endpoint `/v1/resources` untuk agent hanya mengembalikan `id`, `type`, `name`, `tags` dari resource yang dipilih oleh minimal satu policy `allow` untuk agent tersebut; `attributes` dan `credential_id` tidak pernah dikirim ke agent.
@@ -1449,3 +1452,25 @@ Sumber kebenaran kontrak ada di repo agentgate: `app/docs/gateway-contract.md` (
 | Cek nama | `POST /v1/bind` `{models, tools, resources}` → `200 {models: {name: model_id}}` atau `409 names_missing` dengan daftar yang hilang; diaudit; butuh user author atau reviewer |
 | `users.json` | Item `{id, match: {subject} \| {group}, roles}`; role user = gabungan semua item yang cocok |
 | Error | `{"error": {"code", "message"}}` dengan kode §15.3, ditambah `approval_not_found`, `model_not_found`, `names_missing` |
+
+## 23. Kontrak `agentgate-gateway-admin/1` (draf 10 Nov 2026)
+
+Sumber kebenaran: repo agentgate, `app/docs/gateway-admin-contract.md`, tipe wire di `packages/contracts/src/agentgate_contracts/gateway_admin.py`. Desain: `devnotes/design-gateway-admin-20261110.md` di repo itu. Kontrak ini menambah, tidak mengubah §22. Ringkasan untuk implementasi gateway:
+
+| Bagian | Isi |
+| ------ | --- |
+| Versi | `GET /v1/contract` mencantumkan `agentgate-gateway-admin/1` di samping `agentgate-gateway/1` |
+| Admin akses | Header §22 (token agent + `X-User-Token`). User adalah admin akses bila salah satu role-nya ada di setting `admin.user_roles` (file config, infra). Tanpa token user → `401`; bukan admin → `403 not_admin`; endpoint infra → `403 infra_only`. Hak agent tidak berperan. Audit mencatat `actor.kind=user`, `actor.subject`, `actor.via_agent` |
+| Sudut pandang agent pemanggil | Lewat token user, approval, execution, dan audit hanya yang `agent`-nya = agent pemanggil (item agent lain → `404`). Action **privileged** (`ssh.sudo` dan sejenisnya), jendela sudo, dan approval-nya tidak pernah tampil; minta lewat id → `403 infra_only`; plan yang memberinya → problem `privileged_action` (termasuk wildcard yang mencakupnya). Token statis tetap melihat semuanya |
+| Tetap infra (token statis) | credential, buat/ubah/hapus koneksi resource, agent dan token, policy sisi agent (`subject.agent_id`/`role`), action privileged dan jendela sudo, audit verify, revoke, pemulihan. Endpoint tulis satu-per-satu (`PUT /v1/admin/roles/{id}`, `POST /v1/admin/policies`, …) juga tetap infra |
+| Baca | `GET /v1/admin/roles` (`RoleView`: `held_by_agents`, `editable`), `/users`, `/policies?side=user`, `/resources` (`ResourceView`, tanpa secret maupun id credential), `/actions` (`ActionInfo`: `risk`, `read_only`, `source`, `state`) |
+| Direktori | `GET /v1/admin/directory/users?q=&limit=`, `/directory/groups?q=`, dari IdP lewat service account read-only milik gateway. IdP mati → `503 directory_unavailable` |
+| Akses efektif | `GET /v1/admin/access?subject=` → role beserta item `users.json` yang memberinya, grant (user ∩ agent pemanggil) dengan `decision` `allow`/`requester`/`admin` dan policy-nya, serta `denied` beserta alasan |
+| Katalog | `GET /v1/admin/resources/{id}/catalog`, `POST …/sync` (diff `added`/`removed`/`changed`; gagal → `502 sync_failed`, snapshot lama tetap), `POST …/catalog/acknowledge` `{tools}`. SQL: tabel + kolom dari `information_schema`. Resource type baru `mcp_server`: `tools/list` → action `mcp.<resource>.<tool>` (huruf kecil, selain `[a-z0-9_]` → `_`, awalan digit → `t_`; tabrakan → `409 action_collision`; nama tool > 64 → `409 action_too_long`). `readOnlyHint: true` = read, selain itu write. Skema berubah atau read → write = `needs_review`: semua panggilan ditolak sampai di-acknowledge. Sync tidak pernah memberi izin |
+| Perubahan | Hanya lewat plan. `GET /v1/admin/config` → `AccessConfig` (`schema: agentgate-access/1`, kunci nama: `roles` yang tidak dipegang agent, seluruh `users`, policy sisi user, `resource_tables`). `POST /v1/admin/config/plan` → `PlanOut` (`changes`, `problems`: `missing_resource`, `missing_action`, `missing_role`, `role_held_by_agent`, `table_not_in_catalog`, `agent_side_policy`, `privileged_action`, `last_admin`, `self_lockout`; berlaku 15 menit). `POST /v1/admin/config/apply` `{plan_id}`: `409 plan_stale` bila digest berubah, `plan_has_problems`, `plan_expired`, dan `second_admin_required` bila setting `admin.apply_requires_second_admin` aktif (production) dan yang apply = yang membuat plan. `GET /v1/admin/config/plans?status=open` |
+| Sel matriks | Satu policy per sel resource × action: allow (`never`), requester (`requester`), admin (`always`), deny. Nama `<role>--<resource>--<action>` dengan titik → `_` |
+| Approval admin | `GET /v1/admin/approvals?status=`, approve, reject `{reason}`. Admin tidak boleh menyetujui write yang ia minta sendiri → `409 self_approval` |
+| History | `GET /v1/admin/executions?since=&until=&status=&subject=&action=&limit=&cursor=` → halaman `ExecutionView` (tanpa params/result), `GET /v1/admin/executions/{id}` → dengan params dan result yang sudah diredaksi. Terbaru dulu, `limit` 1–200 |
+| Audit | `GET /v1/admin/audit?…&subject=&limit=&cursor=` → halaman. Verify tetap infra |
+| Environment | Satu instance per environment. Console membandingkan dengan membaca `config` dari tiap instance, dan mem-promote dengan mem-plan config sumber di instance tujuan. Secret tidak pernah ada di config |
+| Seed dev | Tiap agent memegang role sendiri (`agentgate-app`), bukan role orang. Role `platform-admin` untuk grup `/platform-admin` di `admin.user_roles` kedua instance. Production `apply_requires_second_admin: true` |
