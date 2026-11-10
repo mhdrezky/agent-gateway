@@ -30,6 +30,8 @@ RULES: list[tuple[str, tuple[str, ...]]] = [
     ("modules.resources", ("modules.crypto",)),
     ("modules.execution", ("modules.crypto",)),
     ("modules.model_endpoints", ("modules.crypto", "brokers")),
+    # Catalogs are read by brokers (they touch the outside), wired in by the runtime.
+    ("modules.catalog", ("modules.crypto", "brokers", "modules.execution")),
     ("common", ("modules", "brokers", "apps", "cli", "config")),
 ]
 

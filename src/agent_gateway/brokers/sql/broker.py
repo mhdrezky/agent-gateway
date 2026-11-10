@@ -5,7 +5,7 @@ read-only with a statement timeout, as the resource's own database login.
 """
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, cast
 
 from pydantic import BaseModel, ValidationError
@@ -75,9 +75,20 @@ def query_result(ctx: ActionContext, output: QueryOutput, cap: int) -> ActionRes
     return ActionResult(ok=True, data=data, truncated=len(rows) < len(candidates))
 
 
+# Tables of a resource that its catalog saw disappear (SPEC §11.6), by resource id.
+type RemovedTables = Callable[[str], Awaitable[frozenset[str]]]
+
+
 class SqlBroker:
-    def __init__(self, runner: SqlRunner | None = None) -> None:
+    def __init__(
+        self, runner: SqlRunner | None = None, *, removed_tables: RemovedTables | None = None
+    ) -> None:
         self._runner = runner or PsycopgRunner()
+        self._removed_tables = removed_tables
+
+    def attach_catalog(self, removed_tables: RemovedTables) -> None:
+        """Refuse tables the resource's catalog saw disappear (wired by the runtime)."""
+        self._removed_tables = removed_tables
 
     @property
     def name(self) -> str:
@@ -105,9 +116,11 @@ class SqlBroker:
     async def query(self, ctx: ActionContext, params: QueryParams) -> ActionResult:
         async def body() -> ActionResult:
             attrs = database_attributes(ctx)
-            gated = gate(
-                params.sql, attrs.schema_name, frozenset(attrs.allowed_tables), attrs.row_cap
-            )
+            allowed = frozenset(attrs.allowed_tables)
+            if self._removed_tables is not None:
+                # Still granted, gone from the database: refused until a plan removes them.
+                allowed -= await self._removed_tables(ctx.resource.id)
+            gated = gate(params.sql, attrs.schema_name, allowed, attrs.row_cap)
             output = await self._runner.run(attrs, database_password(ctx), gated.sql)
             return query_result(ctx, output, gated.cap)
 

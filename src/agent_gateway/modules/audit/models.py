@@ -43,6 +43,9 @@ class AuditEventType(StrEnum):
     ELEVATION_REVOKED = "elevation.revoked"
     MODEL_CHAT = "model.chat"
     BIND_CHECKED = "bind.checked"
+    CATALOG_SYNCED = "catalog.synced"
+    CATALOG_SYNC_FAILED = "catalog.sync_failed"
+    CATALOG_ACKNOWLEDGED = "catalog.acknowledged"
 
 
 class ActorType(StrEnum):

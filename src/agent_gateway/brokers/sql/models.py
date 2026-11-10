@@ -33,7 +33,9 @@ class SqlDatabaseAttributes(BaseModel):
     username: Annotated[str, StringConstraints(pattern=USERNAME_PATTERN)]
     # Every table in a query is pinned to this schema.
     schema_name: Identifier = "public"
-    allowed_tables: tuple[Identifier, ...] = Field(min_length=1)
+    # The tables an agent may query. May start empty: an admin picks them from the
+    # resource's catalog (`agw sync`, SPEC §11.6) and an empty set refuses every query.
+    allowed_tables: tuple[Identifier, ...] = ()
     row_cap: int = Field(default=DEFAULT_ROW_CAP, ge=1, le=MAX_ROW_CAP)
     statement_timeout_ms: int = Field(default=15000, ge=100, le=MAX_STATEMENT_TIMEOUT_MS)
     connect_timeout_seconds: int = Field(default=5, ge=1, le=10)

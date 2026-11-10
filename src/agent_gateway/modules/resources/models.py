@@ -21,6 +21,9 @@ class ResourceType(StrEnum):
     SQL_DATABASE = "sql_database"
     SMTP_SERVER = "smtp_server"
     MODEL = "model"
+    # Admin contract (agentgate-gateway-admin/1 §7): an external MCP server whose tools
+    # become actions through `agw sync`.
+    MCP_SERVER = "mcp_server"
 
 
 class Resource(Record):

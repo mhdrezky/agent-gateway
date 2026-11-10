@@ -4,9 +4,19 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Protocol
 
+from agent_gateway.modules.action_registry.models import ActionDefinition
 from agent_gateway.modules.approvals.models import Approval
 from agent_gateway.modules.execution.models import Execution, ExecutionRequest
 from agent_gateway.modules.identity.models import Principal
+from agent_gateway.modules.resources.models import Resource
+
+
+class ActionGuard(Protocol):
+    """A check outside policy that can only take an allow away (e.g. a catalog review)."""
+
+    async def refusal(self, action: ActionDefinition, resource: Resource) -> str | None:
+        """The reason to deny this call now, or ``None``."""
+        ...
 
 
 class ExecutionStore(Protocol):

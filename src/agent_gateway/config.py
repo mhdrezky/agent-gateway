@@ -69,10 +69,17 @@ class SmtpBrokerSettings(_Section):
     enabled: bool = False
 
 
+class McpBrokerSettings(_Section):
+    # Off by default: only an instance that reaches external MCP servers (agentgate)
+    # turns on the mcp_server resource type and its tools (SPEC §11.6).
+    enabled: bool = False
+
+
 class BrokerSettings(_Section):
     docker: DockerBrokerSettings = Field(default_factory=DockerBrokerSettings)
     sql: SqlBrokerSettings = Field(default_factory=SqlBrokerSettings)
     smtp: SmtpBrokerSettings = Field(default_factory=SmtpBrokerSettings)
+    mcp: McpBrokerSettings = Field(default_factory=McpBrokerSettings)
 
 
 # Asymmetric only: with HMAC algorithms a public JWKS key would double as a signing secret.

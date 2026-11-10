@@ -26,9 +26,21 @@ FROM generate_series(1, 25) AS i;
 
 INSERT INTO sample.customer VALUES (1, 'someone@example.com');
 
+-- Comments for the catalog (agw sync reads them).
+COMMENT ON TABLE sample.product IS 'Products for sale';
+COMMENT ON COLUMN sample.product.price IS 'Unit price';
+
 CREATE ROLE agw_reader LOGIN PASSWORD 'reader-pa55-for-tests';
 GRANT CONNECT ON DATABASE sales TO agw_reader;
 GRANT USAGE ON SCHEMA sample TO agw_reader;
 GRANT SELECT ON ALL TABLES IN SCHEMA sample TO agw_reader;
 GRANT INSERT ON sample.product TO agw_reader;
 GRANT SELECT ON public.product TO agw_reader;
+
+-- Created after the grant above: the reader cannot SELECT it, so the catalog leaves it out.
+CREATE TABLE sample.hidden (id integer PRIMARY KEY);
+-- A quoted mixed-case name that allowed_tables cannot hold; the catalog leaves it out too.
+CREATE TABLE sample."MixedCase" (id integer PRIMARY KEY);
+GRANT SELECT ON sample."MixedCase" TO agw_reader;
+-- The catalog tests create and drop tables here as the owner; the reader may read them.
+ALTER DEFAULT PRIVILEGES IN SCHEMA sample GRANT SELECT ON TABLES TO agw_reader;
