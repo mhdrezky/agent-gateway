@@ -7,6 +7,7 @@ The token is an OIDC access token the IdP signed. It is checked against the IdP'
 
 import asyncio
 import logging
+from collections.abc import Iterable
 from datetime import datetime, timedelta
 from typing import Any, Protocol
 
@@ -138,23 +139,39 @@ class UserDirectory:
         groups = (
             {g for g in raw_groups if isinstance(g, str)} if isinstance(raw_groups, list) else set()
         )
-        matched = sorted(
-            (
-                u
-                for u in await self._users.all()
-                if u.match.subject == subject
-                or (u.match.group is not None and u.match.group in groups)
-            ),
-            key=lambda u: u.id,
+        matched = matching_users(await self._users.all(), subject, groups)
+        roles = user_roles(matched)
+        return UserIdentity(
+            subject=subject,
+            user_ids=tuple(u.id for u in matched),
+            roles=roles,
+            groups=tuple(sorted(groups)),
         )
-        roles = tuple(dict.fromkeys(role for u in matched for role in u.roles))
-        return UserIdentity(subject=subject, user_ids=tuple(u.id for u in matched), roles=roles)
 
     async def on_behalf_of(self, principal: Principal, raw_token: str) -> Principal:
         """The agent ``principal`` acting for the user of ``raw_token``."""
         if principal.kind is not TokenKind.AGENT:
             raise ActionNotAllowedError(AGENT_ONLY_MESSAGE)
         return principal.model_copy(update={"user": await self.resolve(raw_token)})
+
+
+def matching_users(users: Iterable[User], subject: str, groups: Iterable[str]) -> list[User]:
+    """The ``users.json`` items that name ``subject`` or one of its ``groups``, by id."""
+    group_set = set(groups)
+    return sorted(
+        (
+            u
+            for u in users
+            if u.match.subject == subject
+            or (u.match.group is not None and u.match.group in group_set)
+        ),
+        key=lambda u: u.id,
+    )
+
+
+def user_roles(matched: Iterable[User]) -> tuple[str, ...]:
+    """The union of the roles of ``matched``, in first-seen order."""
+    return tuple(dict.fromkeys(role for u in matched for role in u.roles))
 
 
 def build_user_directory(

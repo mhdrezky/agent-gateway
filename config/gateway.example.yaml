@@ -37,3 +37,16 @@ brokers:
 
 bind:
   roles: [author, reviewer]   # user roles that may call POST /v1/bind
+
+# Access admins who sign in through an app (agentgate console) with X-User-Token (SPEC §23).
+# Infra: only this file sets it. Without user_roles nobody is an access admin.
+# admin:
+#   user_roles: [platform-admin]        # users.json roles that make a user an access admin
+#   apply_requires_second_admin: false  # production: true (planner may not apply)
+#   directory:                          # read-only IdP directory (users, groups)
+#     provider: keycloak
+#     base_url: http://keycloak:8080
+#     realm: agentgate-dev
+#     client_id: agentgate-directory
+#     credential: keycloak-directory    # credential (type api_token) holding the client secret
+#     groups_full_path: false           # true when the groups claim carries "/staff"

@@ -1,10 +1,24 @@
-"""Admin endpoints (SPEC §15.2). Every route requires an admin token."""
+"""Admin endpoints (SPEC §15.2).
+
+Infra routes take the static admin token only (``AdminDep``); an access admin signed in
+through an agent gets ``403 infra_only`` there. The reads in the left column of the admin
+contract (SPEC §23) also take an access admin (``AccessAdminDep``) and then answer in the
+contract's shapes, scoped to the calling agent; the static admin token gets the same
+answers as before.
+"""
 
 from datetime import datetime
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Query, status
 
-from agent_gateway.apps.api_server.deps import AdminDep, GatewayDep
+from agent_gateway.apps.api_server import admin_history
+from agent_gateway.apps.api_server.deps import (
+    AccessAdminDep,
+    AdminDep,
+    GatewayDep,
+    require_static,
+)
 from agent_gateway.apps.api_server.schemas import (
     AgentCreate,
     AgentUpdate,
@@ -18,7 +32,14 @@ from agent_gateway.apps.api_server.schemas import (
     RoleBody,
     TokenCreate,
 )
-from agent_gateway.common.errors import NotFoundError
+from agent_gateway.common.errors import InvalidParamsError, NotFoundError
+from agent_gateway.modules.administration.access_models import (
+    AdminApprovalView,
+    AuditPage,
+    ResourceView,
+    RoleView,
+    UserPolicy,
+)
 from agent_gateway.modules.approvals.models import Approval, ApprovalStatus
 from agent_gateway.modules.audit.models import AuditEntry, AuditEventType, VerifyResult
 from agent_gateway.modules.authorization.models import Policy, Role
@@ -106,8 +127,11 @@ async def revoke_token(token_id: str, gateway: GatewayDep, actor: AdminDep) -> T
 
 @router.get("/resources")
 async def list_resources(
-    gateway: GatewayDep, actor: AdminDep, type: ResourceType | None = None
-) -> list[Resource]:
+    gateway: GatewayDep, actor: AccessAdminDep, type: ResourceType | None = None
+) -> list[Resource] | list[ResourceView]:
+    if not actor.is_admin:
+        # An access admin sees no attributes and no credential id (SPEC §23).
+        return [v for v in await gateway.access.resource_views() if type is None or v.type == type]
     return await gateway.admin.list_resources(actor, type=type)
 
 
@@ -177,7 +201,9 @@ async def delete_credential(credential_id: str, gateway: GatewayDep, actor: Admi
 
 
 @router.get("/roles")
-async def list_roles(gateway: GatewayDep, actor: AdminDep) -> list[Role]:
+async def list_roles(gateway: GatewayDep, actor: AccessAdminDep) -> list[Role] | list[RoleView]:
+    if not actor.is_admin:
+        return await gateway.access.role_views()
     return await gateway.admin.list_roles(actor)
 
 
@@ -193,7 +219,15 @@ async def delete_role(role_id: str, gateway: GatewayDep, actor: AdminDep) -> Non
 
 
 @router.get("/policies")
-async def list_policies(gateway: GatewayDep, actor: AdminDep) -> list[Policy]:
+async def list_policies(
+    gateway: GatewayDep,
+    actor: AccessAdminDep,
+    side: Literal["user", "agent"] | None = None,
+) -> list[Policy] | list[UserPolicy]:
+    if not actor.is_admin:
+        if side == "agent":
+            require_static(actor)
+        return await gateway.access.user_policies()
     return await gateway.admin.list_policies(actor)
 
 
@@ -230,13 +264,19 @@ async def delete_policy(policy_id: str, gateway: GatewayDep, actor: AdminDep) ->
 
 @router.get("/approvals")
 async def list_approvals(
-    gateway: GatewayDep, actor: AdminDep, status: ApprovalStatus | None = None
-) -> list[Approval]:
+    gateway: GatewayDep, actor: AccessAdminDep, status: ApprovalStatus | None = None
+) -> list[Approval] | list[AdminApprovalView]:
+    if not actor.is_admin:
+        return await admin_history.list_approvals(gateway, actor, status)
     return await gateway.admin.list_approvals(actor, status=status)
 
 
 @router.post("/approvals/{approval_id}/approve")
-async def approve(approval_id: str, gateway: GatewayDep, actor: AdminDep) -> Approval:
+async def approve(
+    approval_id: str, gateway: GatewayDep, actor: AccessAdminDep
+) -> Approval | AdminApprovalView:
+    if not actor.is_admin:
+        return await admin_history.decide_approval(gateway, actor, approval_id, approve=True)
     approval = await gateway.admin.approve(actor, approval_id)
     await gateway.engine.dispatch_approvals()
     return approval
@@ -244,8 +284,14 @@ async def approve(approval_id: str, gateway: GatewayDep, actor: AdminDep) -> App
 
 @router.post("/approvals/{approval_id}/reject")
 async def reject(
-    approval_id: str, body: RejectBody, gateway: GatewayDep, actor: AdminDep
-) -> Approval:
+    approval_id: str, body: RejectBody, gateway: GatewayDep, actor: AccessAdminDep
+) -> Approval | AdminApprovalView:
+    if not actor.is_admin:
+        if not body.reason:
+            raise InvalidParamsError("reason: an access admin gives a reason to reject")
+        return await admin_history.decide_approval(
+            gateway, actor, approval_id, approve=False, reason=body.reason
+        )
     approval = await gateway.admin.reject(actor, approval_id, body.reason)
     await gateway.engine.dispatch_approvals()
     return approval
@@ -254,11 +300,26 @@ async def reject(
 @router.get("/audit")
 async def audit_entries(
     gateway: GatewayDep,
-    actor: AdminDep,
+    actor: AccessAdminDep,
     since: datetime | None = None,
     until: datetime | None = None,
     event: AuditEventType | None = None,
-) -> list[AuditEntry]:
+    subject: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    cursor: str | None = None,
+) -> list[AuditEntry] | AuditPage:
+    if not actor.is_admin:
+        # An access admin gets pages of what happened through its agent (contract §12).
+        return await admin_history.audit_page(
+            gateway,
+            actor,
+            since=since,
+            until=until,
+            event=event,
+            subject=subject,
+            limit=limit,
+            cursor=cursor,
+        )
     return await gateway.admin.audit_entries(actor, since=since, until=until, event=event)
 
 

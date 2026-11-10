@@ -83,6 +83,8 @@ class UserIdentity(StrictModel):
     subject: str
     user_ids: tuple[str, ...] = ()
     roles: tuple[str, ...] = ()
+    # The groups claim of the token, as sent; used to recompute roles for a planned change.
+    groups: tuple[str, ...] = ()
 
 
 class Principal(StrictModel):

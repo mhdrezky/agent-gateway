@@ -93,3 +93,49 @@ class RateLimitedError(GatewayError):
 class AuditUnavailableError(GatewayError):
     code = "audit_unavailable"
     status_code = 503
+
+
+# ---- agentgate-gateway-admin/1 (SPEC §23) ------------------------------------------------
+
+
+class NotAdminError(GatewayError):
+    """A signed-in user who holds none of the roles in ``admin.user_roles``."""
+
+    code = "not_admin"
+    status_code = 403
+
+
+class InfraOnlyError(GatewayError):
+    """Something only the gateway's own admin (static admin token) may see or do."""
+
+    code = "infra_only"
+    status_code = 403
+
+
+class UserNotFoundError(NotFoundError):
+    code = "user_not_found"
+
+
+class SelfApprovalError(ConflictError):
+    code = "self_approval"
+
+
+class PlanStaleError(ConflictError):
+    code = "plan_stale"
+
+
+class PlanHasProblemsError(ConflictError):
+    code = "plan_has_problems"
+
+
+class PlanExpiredError(ConflictError):
+    code = "plan_expired"
+
+
+class SecondAdminRequiredError(ConflictError):
+    code = "second_admin_required"
+
+
+class DirectoryUnavailableError(GatewayError):
+    code = "directory_unavailable"
+    status_code = 503

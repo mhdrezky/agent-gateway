@@ -16,12 +16,13 @@ from agent_gateway.apps.api_server.schemas import (
     WhoAmI,
 )
 from agent_gateway.apps.api_server.views import action_infos, resource_infos
+from agent_gateway.modules.administration.access_models import ADMIN_CONTRACT_VERSION
 from agent_gateway.modules.execution.models import Execution, ExecutionRequest, ExecutionStatus
 from agent_gateway.modules.resources.models import ResourceType
 
 router = APIRouter(prefix="/v1")
 
-CONTRACT_VERSIONS = ("agentgate-gateway/1",)
+CONTRACT_VERSIONS = ("agentgate-gateway/1", ADMIN_CONTRACT_VERSION)
 
 
 @router.get("/health")

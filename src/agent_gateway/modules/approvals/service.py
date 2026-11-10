@@ -109,6 +109,27 @@ class ApprovalWorkflow:
             allowed=owned,
         )
 
+    async def decide_as_access_admin(
+        self,
+        approval_id: str,
+        subject: str,
+        via_agent: str,
+        *,
+        approve: bool,
+        reason: str | None = None,
+    ) -> Approval:
+        """An access admin signed in through ``via_agent`` decides an admin approval
+        (SPEC §23). The caller has already checked the approval belongs to that agent."""
+        return await self._decide(
+            approval_id,
+            ApprovalStatus.APPROVED if approve else ApprovalStatus.REJECTED,
+            reason,
+            decided_by=subject,
+            actor=Actor(type=ActorType.USER, id=subject),
+            allowed=lambda approval: approval.mode is Approver.ADMIN,
+            extra={"via_agent": via_agent},
+        )
+
     async def expire_due(self) -> list[Approval]:
         expired: list[Approval] = []
         async with self._lock:
@@ -144,6 +165,7 @@ class ApprovalWorkflow:
         decided_by: str,
         actor: Actor,
         allowed: Callable[[Approval], bool],
+        extra: dict[str, object] | None = None,
     ) -> Approval:
         async with self._lock:
             current = await self._approvals.get(approval_id)
@@ -169,7 +191,7 @@ class ApprovalWorkflow:
                 if status is ApprovalStatus.APPROVED
                 else AuditEventType.APPROVAL_REJECTED
             )
-            await self._record(event, decided, actor)
+            await self._record(event, decided, actor, extra)
             return await self._approvals.update(approval_id, _transition(decided))
 
     async def _expire(self, approval_id: str) -> Approval:
@@ -188,8 +210,14 @@ class ApprovalWorkflow:
             approval.status is ApprovalStatus.PENDING and self._clock.now() >= approval.expires_at
         )
 
-    async def _record(self, event: AuditEventType, approval: Approval, actor: Actor) -> None:
-        details: dict[str, object] = {"approval_id": approval.id}
+    async def _record(
+        self,
+        event: AuditEventType,
+        approval: Approval,
+        actor: Actor,
+        extra: dict[str, object] | None = None,
+    ) -> None:
+        details: dict[str, object] = {"approval_id": approval.id, **(extra or {})}
         if approval.mode is Approver.REQUESTER:
             details["mode"] = str(approval.mode)
         if approval.correlation_id is not None:

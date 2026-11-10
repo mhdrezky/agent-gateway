@@ -6,7 +6,7 @@ then the defaults below. Nested keys use ``__``, e.g. ``AGW_APPROVALS__TTL_MINUT
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -110,6 +110,42 @@ class BindSettings(_Section):
     roles: list[str] = Field(default_factory=lambda: ["author", "reviewer"])
 
 
+class DirectorySettings(_Section):
+    """The IdP directory the console reads through the gateway (SPEC §23, contract §5).
+
+    A read-only service account (client credentials); its secret is the credential named
+    ``credential`` in the gateway's credential store, never a value in this file.
+    """
+
+    provider: Literal["keycloak"] = "keycloak"
+    # Root of the IdP, e.g. http://keycloak:8080 (no /realms/... suffix).
+    base_url: str = Field(pattern=r"^https?://[^\s/?#]+(/[^\s?#]*)?$", max_length=2048)
+    realm: str = Field(min_length=1, max_length=255)
+    client_id: str = Field(min_length=1, max_length=255)
+    credential: str = Field(min_length=1, max_length=100)
+    # How group names appear in the token's groups claim: "/staff" (full path) or "staff".
+    groups_full_path: bool = False
+    timeout_seconds: int = Field(default=10, ge=1, le=60)
+
+    @field_validator("base_url")
+    @classmethod
+    def _no_trailing_slash(cls, value: str) -> str:
+        return value.rstrip("/")
+
+
+class AdminSettings(_Section):
+    """Access admins who sign in through an app with ``X-User-Token`` (SPEC §23).
+
+    Infra: only this file sets it, never the admin API.
+    """
+
+    # A user holding one of these roles (from users.json) is an access admin.
+    user_roles: list[str] = Field(default_factory=list)
+    # Production: the admin who applies a plan must not be the one who made it.
+    apply_requires_second_admin: bool = False
+    directory: DirectorySettings | None = None
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="AGW_",
@@ -128,6 +164,7 @@ class Settings(BaseSettings):
     brokers: BrokerSettings = Field(default_factory=BrokerSettings)
     users: UserSettings = Field(default_factory=UserSettings)
     bind: BindSettings = Field(default_factory=BindSettings)
+    admin: AdminSettings = Field(default_factory=AdminSettings)
 
     @classmethod
     def settings_customise_sources(

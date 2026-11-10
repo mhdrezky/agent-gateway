@@ -43,6 +43,8 @@ class AuditEventType(StrEnum):
     ELEVATION_REVOKED = "elevation.revoked"
     MODEL_CHAT = "model.chat"
     BIND_CHECKED = "bind.checked"
+    # One plan of the access configuration applied (SPEC §23); details carry the full diff.
+    ACCESS_APPLIED = "access.applied"
 
 
 class ActorType(StrEnum):

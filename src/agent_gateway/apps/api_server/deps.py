@@ -13,6 +13,8 @@ from agent_gateway.common.errors import (
     AdminRequiredError,
     AuthenticationError,
     GatewayError,
+    InfraOnlyError,
+    NotAdminError,
     RateLimitedError,
 )
 from agent_gateway.modules.audit.models import Actor, ActorType, AuditEventType, AuditRecord
@@ -112,10 +114,45 @@ async def current_principal(
 PrincipalDep = Annotated[Principal, Depends(current_principal)]
 
 
-async def admin_principal(principal: PrincipalDep) -> Principal:
-    if not principal.is_admin:
+USER_TOKEN_REQUIRED = "a user token (X-User-Token) is required"
+NOT_ADMIN = "this user is not an access admin"
+INFRA_ONLY = "only the gateway admin (admin token) can do this"
+
+
+def _require_access_admin(gateway: Gateway, principal: Principal) -> None:
+    """An agent call is an access admin's when its user holds a role in
+    ``admin.user_roles`` (SPEC §23). The agent's own grants play no part."""
+    if principal.user is None:
+        raise AuthenticationError(USER_TOKEN_REQUIRED)
+    if not gateway.access.is_access_admin(principal.user.roles):
+        raise NotAdminError(NOT_ADMIN)
+
+
+async def admin_principal(principal: PrincipalDep, gateway: GatewayDep) -> Principal:
+    """Infra endpoints: the static admin token only. An access admin gets ``infra_only``."""
+    if principal.is_admin:
+        return principal
+    if principal.user is None:
         raise AdminRequiredError("admin token required")
-    return principal
+    _require_access_admin(gateway, principal)
+    raise InfraOnlyError(INFRA_ONLY)
 
 
 AdminDep = Annotated[Principal, Depends(admin_principal)]
+
+
+async def access_admin_principal(principal: PrincipalDep, gateway: GatewayDep) -> Principal:
+    """Endpoints of ``agentgate-gateway-admin/1``: the static admin token, or an agent token
+    with the ``X-User-Token`` of an access admin."""
+    if not principal.is_admin:
+        _require_access_admin(gateway, principal)
+    return principal
+
+
+AccessAdminDep = Annotated[Principal, Depends(access_admin_principal)]
+
+
+def require_static(principal: Principal) -> None:
+    """Refuse an access admin where only the static admin token may go."""
+    if not principal.is_admin:
+        raise InfraOnlyError(INFRA_ONLY)

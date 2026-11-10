@@ -49,6 +49,19 @@ class ApprovalService(Protocol):
         """
         ...
 
+    async def decide_as_access_admin(
+        self,
+        approval_id: str,
+        subject: str,
+        via_agent: str,
+        *,
+        approve: bool,
+        reason: str | None = None,
+    ) -> Approval:
+        """Decide an ``admin`` approval as an access admin signed in through ``via_agent``
+        (SPEC §23). Raise ``ApprovalNotFoundError`` for any other approval."""
+        ...
+
     async def expire_due(self) -> list[Approval]:
         """Mark every pending approval past ``expires_at`` as expired and return them."""
         ...

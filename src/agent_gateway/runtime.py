@@ -22,6 +22,13 @@ from agent_gateway.brokers.ssh.broker import SshBroker
 from agent_gateway.common.clock import Clock, SystemClock
 from agent_gateway.config import Settings
 from agent_gateway.modules.action_registry.registry import InMemoryActionRegistry
+from agent_gateway.modules.administration.access import AccessAdmin, StoredPlan
+from agent_gateway.modules.administration.catalog_port import CatalogPort, NullCatalog
+from agent_gateway.modules.administration.directory import (
+    Directory,
+    KeycloakDirectory,
+    UnconfiguredDirectory,
+)
 from agent_gateway.modules.administration.service import AdminService
 from agent_gateway.modules.approvals.models import Approval
 from agent_gateway.modules.approvals.service import ApprovalWorkflow
@@ -41,7 +48,7 @@ from agent_gateway.modules.identity.authenticator import TokenAuthenticator
 from agent_gateway.modules.identity.models import Agent, Token, User
 from agent_gateway.modules.identity.service import IdentityManager
 from agent_gateway.modules.identity.users import JwksSource, UserDirectory, build_user_directory
-from agent_gateway.modules.model_endpoints.models import ModelAttributes
+from agent_gateway.modules.model_endpoints.models import MODEL_CHAT, ModelAttributes
 from agent_gateway.modules.model_endpoints.service import ModelService
 from agent_gateway.modules.resources.models import Resource, ResourceType
 from agent_gateway.modules.resources.registry import StoredResourceRegistry
@@ -72,6 +79,9 @@ class Gateway:
     engine: GatewayExecutionEngine
     admin: AdminService
     models: ModelService
+    access: AccessAdmin
+    approvals: ApprovalWorkflow
+    executions: FileExecutionStore
     _dispatcher: asyncio.Task[None] | None = field(default=None, init=False)
 
     async def start(self, *, background: bool = True) -> None:
@@ -121,6 +131,8 @@ def build_gateway(
     clock: Clock | None = None,
     jwks: JwksSource | None = None,
     model_transport: httpx.AsyncBaseTransport | None = None,
+    catalog: CatalogPort | None = None,
+    directory_transport: httpx.AsyncBaseTransport | None = None,
 ) -> Gateway:
     clock = clock or SystemClock()
     keyring = keyring or MasterKeyRing.from_file(settings.master_key_file)
@@ -139,6 +151,7 @@ def build_gateway(
 
     resources_data = JsonCollection(var / "resources.json", Resource, locker=locker, clock=clock)
     users_data = JsonCollection(var / "users.json", User, locker=locker, clock=clock)
+    plans_data = JsonCollection(var / "access_plans.json", StoredPlan, locker=locker, clock=clock)
 
     registry = InMemoryActionRegistry(disabled=settings.actions.disabled)
     schemas: dict[ResourceType, type[BaseModel]] = {ResourceType.MODEL: ModelAttributes}
@@ -161,8 +174,9 @@ def build_gateway(
     approvals = ApprovalWorkflow(approvals_data, audit, clock, settings.approvals)
     elevations = ElevationService(elevations_data, audit, clock)
     policy_engine = DefaultPolicyEngine()
+    executions = FileExecutionStore(var / "executions", locker=locker)
     engine = GatewayExecutionEngine(
-        executions=FileExecutionStore(var / "executions", locker=locker),
+        executions=executions,
         registry=registry,
         resources=resources,
         credentials=credentials,
@@ -198,6 +212,30 @@ def build_gateway(
         clock=clock,
         transport=model_transport,
     )
+    directory_settings = settings.admin.directory
+    directory: Directory = (
+        UnconfiguredDirectory()
+        if directory_settings is None
+        else KeycloakDirectory(
+            directory_settings, credentials, clock, transport=directory_transport
+        )
+    )
+    access = AccessAdmin(
+        settings=settings.admin,
+        roles=roles,
+        policies=policies,
+        users=users_data,
+        resources=resources,
+        identity=identity,
+        registry=registry,
+        plans=plans_data,
+        audit=audit,
+        clock=clock,
+        catalog=catalog or NullCatalog(),
+        directory=directory,
+        policy_engine=policy_engine,
+        extra_actions=(MODEL_CHAT,),
+    )
     return Gateway(
         settings=settings,
         clock=clock,
@@ -211,6 +249,7 @@ def build_gateway(
             resources_data,
             elevations_data,
             users_data,
+            plans_data,
         ],
         registry=registry,
         audit=audit,
@@ -220,4 +259,7 @@ def build_gateway(
         engine=engine,
         admin=admin,
         models=models,
+        access=access,
+        approvals=approvals,
+        executions=executions,
     )

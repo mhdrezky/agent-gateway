@@ -142,12 +142,15 @@ async def test_p5_agents_cannot_use_admin_endpoints(world: World) -> None:
     for method, path in [
         ("GET", "/v1/admin/agents"),
         ("POST", "/v1/admin/tokens"),
-        ("GET", "/v1/admin/audit"),
         ("PUT", "/v1/admin/roles/operator"),
     ]:
         response = await world.api.request(method, path, headers=world.agent(), json={})
         assert response.status_code == 403, path
         assert response.json()["error"]["code"] == "admin_required"
+    # Access-admin reads (SPEC §23) want the user an agent calls for; the agent alone is 401.
+    for path in ("/v1/admin/audit", "/v1/admin/roles", "/v1/admin/config"):
+        response = await world.api.get(path, headers=world.agent())
+        assert response.status_code == 401, path
 
 
 async def test_p5_admin_tokens_cannot_run_actions(world: World) -> None:

@@ -1224,6 +1224,17 @@ users:
     jwks_cache_seconds: 300
 bind:
   roles: [author, reviewer]   # role user yang boleh memanggil POST /v1/bind (§15.4)
+admin:                        # admin akses lewat app (§23); infra, hanya file ini yang mengatur
+  user_roles: [platform-admin]
+  apply_requires_second_admin: false   # production: true
+  directory:                  # direktori IdP read-only (§23); opsional, tanpa ini 503
+    provider: keycloak
+    base_url: http://keycloak:8080
+    realm: agentgate-dev
+    client_id: agentgate-directory
+    credential: keycloak-directory     # nama credential (tipe api_token) berisi client secret
+    groups_full_path: false
+    timeout_seconds: 10
 ```
 
 Setiap nilai bisa di-override dengan env `AGW_<SECTION>__<KEY>` (contoh `AGW_APPROVALS__TTL_MINUTES=30`). Konfigurasi divalidasi dengan Pydantic Settings saat start.
@@ -1474,3 +1485,11 @@ Sumber kebenaran: repo agentgate, `app/docs/gateway-admin-contract.md`, tipe wir
 | Audit | `GET /v1/admin/audit?…&subject=&limit=&cursor=` → halaman. Verify tetap infra |
 | Environment | Satu instance per environment. Console membandingkan dengan membaca `config` dari tiap instance, dan mem-promote dengan mem-plan config sumber di instance tujuan. Secret tidak pernah ada di config |
 | Seed dev | Tiap agent memegang role sendiri (`agentgate-app`), bukan role orang. Role `platform-admin` untuk grup `/platform-admin` di `admin.user_roles` kedua instance. Production `apply_requires_second_admin: true` |
+
+### 23.1 Implementasi gateway (lane G, 10 Nov 2026)
+
+- Auth: `apps/api_server/deps.py` (`AccessAdminDep` untuk kolom kiri kontrak §1, `AdminDep` untuk infra). Token agent tanpa `X-User-Token` di endpoint kolom kiri → `401`; di endpoint infra tetap `403 admin_required`. User bukan admin → `403 not_admin`; admin akses di endpoint infra → `403 infra_only`.
+- Endpoint yang sudah ada (`roles`, `policies`, `resources`, `approvals`, `audit`) menjawab bentuk kontrak hanya untuk admin akses; token statis mendapat jawaban yang sama seperti sebelumnya. Endpoint baru ada di `routes_access_admin.py` dan menjawab bentuk kontrak untuk keduanya.
+- Logika di `modules/administration/access.py` (config, plan, apply, akses efektif), `directory.py` (Keycloak, client credentials), `catalog_port.py` (`CatalogPort` + `NullCatalog`; katalog sungguhan dipasang lewat `build_gateway(catalog=...)`). Tampilan approval/execution/audit di `apps/api_server/admin_history.py`.
+- Plan disimpan di `var/access_plans.json` (id `pln_<ULID>`). Apply = satu event audit `access.applied` dengan diff lengkap, ditulis sebelum perubahan (fail closed).
+- Audit: actor admin akses = `{"type": "user", "id": "<sub>"}` dengan `details.via_agent` = id agent; `AuditEntryView` memetakannya ke `actor.kind/subject/via_agent` (nama agent). Bentuk entry audit tidak berubah, jadi hash chain lama tetap terverifikasi.

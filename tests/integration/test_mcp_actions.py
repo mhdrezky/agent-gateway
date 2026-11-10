@@ -258,4 +258,4 @@ async def test_admin_approval_is_not_a_user_write(user_world: World, idp: FakeId
 async def test_contract_version_needs_no_auth(world: World) -> None:
     response = await world.api.get("/v1/contract")
     assert response.status_code == 200
-    assert response.json() == {"versions": ["agentgate-gateway/1"]}
+    assert response.json() == {"versions": ["agentgate-gateway/1", "agentgate-gateway-admin/1"]}

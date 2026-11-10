@@ -1,7 +1,7 @@
 """A real gateway on a temp ``var/`` with fake brokers, driven through the REST API."""
 
 import asyncio
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -11,7 +11,8 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from agent_gateway.apps.api_server.app import create_app
-from agent_gateway.brokers.base import ActionContext, ActionResult
+from agent_gateway.brokers.base import ActionContext, ActionResult, Broker
+from agent_gateway.common.clock import Clock
 from agent_gateway.config import RateLimitSettings, Settings, UserSettings
 from agent_gateway.modules.action_registry.models import (
     ActionDefinition,
@@ -19,6 +20,7 @@ from agent_gateway.modules.action_registry.models import (
     RiskLevel,
 )
 from agent_gateway.modules.action_registry.ports import ActionRegistry
+from agent_gateway.modules.administration.catalog_port import CatalogPort
 from agent_gateway.modules.administration.service import CLI_PRINCIPAL
 from agent_gateway.modules.authorization.models import (
     ApprovalMode,
@@ -141,10 +143,20 @@ async def build_world(
     approval: ApprovalMode,
     jwks: JwksSource | None = None,
     model_transport: httpx.AsyncBaseTransport | None = None,
+    extra_brokers: Sequence[Broker] = (),
+    catalog: CatalogPort | None = None,
+    directory_transport: httpx.AsyncBaseTransport | None = None,
+    clock: Clock | None = None,
 ) -> World:
     fake = FakeBroker()
     gateway = build_gateway(
-        settings, brokers=[fake, TestBroker()], jwks=jwks, model_transport=model_transport
+        settings,
+        brokers=[fake, TestBroker(), *extra_brokers],
+        jwks=jwks,
+        model_transport=model_transport,
+        catalog=catalog,
+        directory_transport=directory_transport,
+        clock=clock,
     )
     await gateway.start(background=False)
     admin = gateway.admin

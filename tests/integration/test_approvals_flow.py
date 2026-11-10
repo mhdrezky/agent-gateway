@@ -30,7 +30,8 @@ async def test_approve_runs_the_execution(approval_world: World) -> None:
     by_agent = await w.api.post(
         f"/v1/admin/approvals/{execution['approval_id']}/approve", headers=w.agent()
     )
-    assert by_agent.status_code == 403
+    # An agent alone never approves; admin approval endpoints want an admin user (SPEC §23).
+    assert by_agent.status_code == 401
 
     approved = await w.api.post(
         f"/v1/admin/approvals/{execution['approval_id']}/approve", headers=w.admin()
